@@ -1,4 +1,7 @@
 node_modules/
-data/
+# Только корневой checkout приватного data-репо (workflow кладёт его сюда
+# как `path: data`) — БЕЗ анкера `/` это правило матчило и public/data/
+# (там живёт корпус свечей), что вымело весь корпус из git.
+/data/
 night-summary.json
 *.tsbuildinfo
