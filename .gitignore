@@ -1,0 +1,4 @@
+node_modules/
+data/
+night-summary.json
+*.tsbuildinfo

@@ -1,0 +1,105 @@
+import type { BacktestStats, TradeResult } from "../types";
+import { computeStats } from "../backtest/stats";
+
+/**
+ * Trading-cost haircut.
+ *
+ * The backtest engine models neither fees nor slippage — it fills at the bar's
+ * open, exactly. So every expectancy the committee computes is systematically
+ * optimistic, and the thinner the stop, the worse the distortion: a setup
+ * risking 0.4% per trade loses a quarter of its edge to a 0.1% round trip.
+ *
+ * This is the single strongest deterministic argument the bear side has, and
+ * it converts an opinion ("costs will eat it") into a number. A setup whose
+ * expectancy flips negative once costs are charged is not a marginal call —
+ * it is a setup that loses money.
+ */
+
+/** Binance spot taker is 0.10% a side; 0.05% covers a typical maker/BNB path. */
+export const DEFAULT_FEE_RATE = 0.0005;
+/** Slippage on a liquid pair at retail size. Deliberately not optimistic. */
+export const DEFAULT_SLIPPAGE_RATE = 0.0005;
+
+export interface CostAssumptions {
+  feeRate: number;
+  slippageRate: number;
+}
+
+export const DEFAULT_COSTS: CostAssumptions = {
+  feeRate: DEFAULT_FEE_RATE,
+  slippageRate: DEFAULT_SLIPPAGE_RATE,
+};
+
+export interface CostAdjustedResult {
+  /** Cost of a round trip expressed in R — i.e. as a fraction of the risk taken. */
+  costR: number;
+  grossExpectancy: number;
+  netExpectancy: number;
+  /** True when costs alone turn a profitable setup into a losing one. */
+  flipsNegative: boolean;
+  assumptions: CostAssumptions;
+}
+
+/**
+ * Converts a per-trade round-trip cost into R units.
+ *
+ * A trade's risk distance is |entry - stop|. Cost is charged on notional at
+ * both entry and exit, so `2 * rate * entryPrice`, divided by the risk distance
+ * to express it in the same units expectancy is measured in.
+ */
+export function tradeCostInR(trade: TradeResult, costs: CostAssumptions = DEFAULT_COSTS): number {
+  const riskDistance = Math.abs(trade.entryPrice - trade.stopPrice);
+  if (!Number.isFinite(riskDistance) || riskDistance <= 0) return 0;
+  const roundTripRate = 2 * (costs.feeRate + costs.slippageRate);
+  return (roundTripRate * trade.entryPrice) / riskDistance;
+}
+
+/**
+ * Mean per-trade cost in R, over the trades whose risk is actually measurable.
+ *
+ * A trade whose stop sits at its entry has an undefined cost in R, and
+ * {@link tradeCostInR} reports 0 for it. Averaging those zeros in would make a
+ * setup look CHEAPER the more unmeasurable trades it contains — costs are a
+ * veto input, so that would turn a data problem into a free pass.
+ */
+export function averageCostInR(trades: TradeResult[], costs: CostAssumptions = DEFAULT_COSTS): number {
+  let sum = 0;
+  let measurable = 0;
+  for (const trade of trades) {
+    const riskDistance = Math.abs(trade.entryPrice - trade.stopPrice);
+    if (!Number.isFinite(riskDistance) || riskDistance <= 0) continue;
+    sum += tradeCostInR(trade, costs);
+    measurable += 1;
+  }
+  return measurable === 0 ? 0 : sum / measurable;
+}
+
+export function applyCosts(
+  trades: TradeResult[],
+  stats: BacktestStats,
+  costs: CostAssumptions = DEFAULT_COSTS,
+): CostAdjustedResult {
+  const costR = averageCostInR(trades, costs);
+  const grossExpectancy = stats.expectancy;
+  const netExpectancy = grossExpectancy - costR;
+  return {
+    costR,
+    grossExpectancy,
+    netExpectancy,
+    flipsNegative: grossExpectancy > 0 && netExpectancy <= 0,
+    assumptions: costs,
+  };
+}
+
+/**
+ * Recomputes full stats on cost-adjusted trades. Heavier than {@link applyCosts}
+ * but gives an honest profit factor and win rate too — a trade that cleared its
+ * target by less than the cost was not actually a winner.
+ */
+export function statsAfterCosts(trades: TradeResult[], costs: CostAssumptions = DEFAULT_COSTS): BacktestStats {
+  const adjusted = trades.map((trade) => {
+    const net = trade.rMultiple - tradeCostInR(trade, costs);
+    return { ...trade, rMultiple: net, won: net > 0 };
+  });
+  return computeStats(adjusted);
+}

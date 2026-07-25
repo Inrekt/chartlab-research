@@ -1,0 +1,331 @@
+import type { Candle, ConditionAtom, ConditionGroup, IndicatorRef } from "../types";
+import {
+  adx,
+  atrChannel,
+  bollinger,
+  cci,
+  choppiness,
+  donchian,
+  ema,
+  hurst,
+  ichimoku,
+  keltner,
+  macd,
+  obv,
+  parabolicSar,
+  realizedVol,
+  realizedVolPercentile,
+  roc,
+  rsi,
+  sma,
+  stochastic,
+  superTrend,
+  vwap,
+  williamsR,
+  zscore,
+} from "../indicators";
+
+/**
+ * Aligns a (possibly shorter, offset) indicator series to the full candle
+ * array by time, so callers can index it the same way as `candles`.
+ */
+function alignByTime(candles: Candle[], points: { time: number; value: number }[]): (number | null)[] {
+  const byTime = new Map(points.map((p) => [p.time, p.value]));
+  return candles.map((c) => byTime.get(c.time) ?? null);
+}
+
+function resolveIndicatorSeries(candles: Candle[], ref: IndicatorRef): (number | null)[] {
+  switch (ref.kind) {
+    case "price":
+    case "close":
+      return candles.map((c) => c[ref.field ?? "close"] as number);
+    case "sma":
+      return alignByTime(candles, sma(candles, ref.period ?? 20, ref.field));
+    case "ema":
+      return alignByTime(candles, ema(candles, ref.period ?? 20, ref.field));
+    case "rsi":
+      return alignByTime(candles, rsi(candles, ref.period ?? 14));
+    case "vwap":
+      return alignByTime(candles, vwap(candles));
+    case "macd": {
+      // Сигнальная линия и гистограмма считались всегда, но наружу отдавалась
+      // только линия MACD — из-за чего классический «MACD пересёк сигнальную»,
+      // самый ходовой вид этого сигнала, выразить в шаблоне было нельзя.
+      const result = macd(candles);
+      const key = ref.line === "signal" ? "signal" : ref.line === "histogram" ? "histogram" : "macd";
+      return alignByTime(
+        candles,
+        result.map((p) => ({ time: p.time, value: p[key] })),
+      );
+    }
+    case "bollinger": {
+      // `line` обязателен к учёту: раньше здесь всегда возвращалась средняя, и
+      // условие «цена ниже нижней полосы» молча означало «цена ниже SMA20» —
+      // без ошибки, без предупреждения, с совершенно другим смыслом сигнала.
+      const result = bollinger(candles, ref.period ?? 20);
+      return alignByTime(candles, channelLine(result, ref.line));
+    }
+    case "stochastic": {
+      const result = stochastic(candles, ref.period ?? 14);
+      const key = ref.line === "d" ? "d" : "k";
+      return alignByTime(candles, result.map((p) => ({ time: p.time, value: p[key] })));
+    }
+    case "adx": {
+      const result = adx(candles, ref.period ?? 14);
+      const key = ref.line === "plusDI" ? "plusDI" : ref.line === "minusDI" ? "minusDI" : "adx";
+      return alignByTime(candles, result.map((p) => ({ time: p.time, value: p[key] })));
+    }
+    case "ichimoku": {
+      const result = ichimoku(candles);
+      const key = ref.line ?? "tenkan";
+      if (key === "kijun" || key === "senkouA" || key === "senkouB" || key === "chikou" || key === "tenkan") {
+        return alignByTime(candles, result.map((p) => ({ time: p.time, value: p[key] })));
+      }
+      return alignByTime(candles, result.map((p) => ({ time: p.time, value: p.tenkan })));
+    }
+    case "superTrend": {
+      const result = superTrend(candles, ref.period ?? 10);
+      return alignByTime(candles, result.map((p) => ({ time: p.time, value: p.value })));
+    }
+    case "parabolicSar":
+      return alignByTime(candles, parabolicSar(candles));
+    case "cci":
+      return alignByTime(candles, cci(candles, ref.period ?? 20));
+    case "williamsR":
+      return alignByTime(candles, williamsR(candles, ref.period ?? 14));
+    case "obv":
+      return alignByTime(candles, obv(candles));
+    case "keltner": {
+      const result = keltner(candles, ref.period ?? 20, ref.atrPeriod ?? 10, ref.mult ?? 2);
+      return alignByTime(candles, channelLine(result, ref.line));
+    }
+    case "donchian": {
+      const result = donchian(candles, ref.period ?? 20);
+      return alignByTime(candles, channelLine(result, ref.line));
+    }
+    case "atrChannel": {
+      const result = atrChannel(candles, ref.period ?? 20, ref.atrPeriod ?? 14, ref.mult ?? 3);
+      return alignByTime(candles, channelLine(result, ref.line));
+    }
+    case "roc":
+      return alignByTime(candles, roc(candles, ref.period ?? 12));
+    case "choppiness":
+      return alignByTime(candles, choppiness(candles, ref.period ?? 14));
+    case "hurst":
+      return alignByTime(candles, hurst(candles, ref.period ?? 100));
+    case "realizedVol":
+      return alignByTime(candles, realizedVol(candles, ref.period ?? 20));
+    case "volPercentile":
+      return alignByTime(candles, realizedVolPercentile(candles, ref.period ?? 20));
+    case "zscore":
+      return alignByTime(candles, zscore(candles, ref.period ?? 20));
+    default:
+      throw new Error(`Unknown indicator kind: ${(ref as IndicatorRef).kind}`);
+  }
+}
+
+/** value[i] = base[i − shift]; первые shift позиций — null (данных ещё не было). */
+function shiftSeries(series: (number | null)[], shift: number): (number | null)[] {
+  const out = new Array<number | null>(series.length).fill(null);
+  for (let i = shift; i < series.length; i++) out[i] = series[i - shift];
+  return out;
+}
+
+interface ChannelPoint {
+  time: number;
+  upper: number;
+  lower: number;
+  middle: number;
+}
+
+/** Выбор линии канала; по умолчанию middle — сравнение с центром канала. */
+function channelLine(
+  points: ChannelPoint[],
+  line: IndicatorRef["line"],
+): { time: number; value: number }[] {
+  const key = line === "upper" || line === "lower" ? line : "middle";
+  return points.map((p) => ({ time: p.time, value: p[key] }));
+}
+
+/**
+ * Precomputes and caches every indicator series a strategy references, so
+ * evaluating bar-by-bar during a backtest is O(1) per condition instead of
+ * recomputing full indicator history at every bar.
+ */
+export class EvaluationContext {
+  private cache = new Map<string, (number | null)[]>();
+  private candles: Candle[];
+
+  constructor(candles: Candle[]) {
+    this.candles = candles;
+  }
+
+  private seriesFor(ref: IndicatorRef): (number | null)[] {
+    const key = JSON.stringify(ref);
+    let series = this.cache.get(key);
+    if (!series) {
+      series = resolveIndicatorSeries(this.candles, ref);
+      if (ref.shift && ref.shift > 0) series = shiftSeries(series, ref.shift);
+      this.cache.set(key, series);
+    }
+    return series;
+  }
+
+  valueAt(ref: IndicatorRef, index: number): number | null {
+    const series = this.seriesFor(ref);
+    return series[index] ?? null;
+  }
+
+  private resolveOperand(operand: IndicatorRef | number, index: number): number | null {
+    return typeof operand === "number" ? operand : this.valueAt(operand, index);
+  }
+
+  evaluateAtom(atom: ConditionAtom, index: number): boolean {
+    if (atom.kind === "comparison") {
+      const left = this.resolveOperand(atom.left, index);
+      const right = this.resolveOperand(atom.right, index);
+      if (left === null || right === null) return false;
+      switch (atom.op) {
+        case ">":
+          return left > right;
+        case "<":
+          return left < right;
+        case ">=":
+          return left >= right;
+        case "<=":
+          return left <= right;
+      }
+    }
+
+    if (atom.kind === "crossover") {
+      if (index === 0) return false;
+      const aNow = this.resolveOperand(atom.a, index);
+      const aPrev = this.resolveOperand(atom.a, index - 1);
+      const bNow = this.resolveOperand(atom.b, index);
+      const bPrev = this.resolveOperand(atom.b, index - 1);
+      if (aNow === null || aPrev === null || bNow === null || bPrev === null) return false;
+      return atom.direction === "above" ? aPrev <= bPrev && aNow > bNow : aPrev >= bPrev && aNow < bNow;
+    }
+
+    if (atom.kind === "priceAction") {
+      return matchesPriceAction(this.candles, index, atom.pattern, atom.lookback);
+    }
+
+    if (atom.kind === "time") {
+      return matchesTime(this.candles[index], atom);
+    }
+
+    if (atom.kind === "divergence") {
+      const oscRef: IndicatorRef =
+        atom.osc === "rsi" ? { kind: "rsi", period: atom.period ?? 14 } : { kind: "macd" };
+      return matchesDivergence(this.candles, this.seriesFor(oscRef), index, atom);
+    }
+
+    return false;
+  }
+
+  evaluateGroup(group: ConditionGroup, index: number): boolean {
+    const results = group.conditions.map((c) =>
+      "operator" in c ? this.evaluateGroup(c, index) : this.evaluateAtom(c, index)
+    );
+    return group.operator === "AND" ? results.every(Boolean) : results.some(Boolean);
+  }
+}
+
+function matchesPriceAction(
+  candles: Candle[],
+  index: number,
+  pattern: "engulfing" | "pinbar" | "insideBar",
+  lookback: number
+): boolean {
+  if (index < lookback) return false;
+  const curr = candles[index];
+  const prev = candles[index - 1];
+
+  if (pattern === "engulfing") {
+    const currBullish = curr.close > curr.open;
+    const prevBullish = prev.close > prev.open;
+    if (currBullish === prevBullish) return false;
+    return currBullish
+      ? curr.open < prev.close && curr.close > prev.open
+      : curr.open > prev.close && curr.close < prev.open;
+  }
+
+  if (pattern === "insideBar") {
+    return curr.high <= prev.high && curr.low >= prev.low;
+  }
+
+  // pinbar: small body, long wick dominating the range
+  const range = curr.high - curr.low;
+  if (range <= 0) return false;
+  const body = Math.abs(curr.close - curr.open);
+  const upperWick = curr.high - Math.max(curr.open, curr.close);
+  const lowerWick = Math.min(curr.open, curr.close) - curr.low;
+  const dominantWick = Math.max(upperWick, lowerWick);
+  return body / range < 0.3 && dominantWick / range > 0.6;
+}
+
+function matchesTime(
+  candle: Candle,
+  atom: Extract<ConditionAtom, { kind: "time" }>,
+): boolean {
+  const date = new Date(candle.time * 1000);
+  if (atom.dayOfWeek && !atom.dayOfWeek.includes(date.getUTCDay())) return false;
+  if (atom.hourRangeUtc) {
+    const [from, to] = atom.hourRangeUtc;
+    const hour = date.getUTCHours();
+    // Диапазон может переходить через полночь: [22, 4) означает 22..23 и 0..3.
+    const inRange = from <= to ? hour >= from && hour < to : hour >= from || hour < to;
+    if (!inRange) return false;
+  }
+  return true;
+}
+
+/** Пивот = экстремум строго против PIVOT_WING соседей с каждой стороны. */
+const PIVOT_WING = 2;
+
+/**
+ * Дивергенция цена/осциллятор. Бычья: цена ставит более низкий минимум, а
+ * осциллятор — более высокий; медвежья зеркально по максимумам. Сигнал
+ * срабатывает только на баре, где второй пивот ПОДТВЕРДИЛСЯ (через PIVOT_WING
+ * баров после экстремума) — никакого заглядывания вперёд и повторных
+ * срабатываний на каждом баре.
+ */
+function matchesDivergence(
+  candles: Candle[],
+  osc: (number | null)[],
+  index: number,
+  atom: Extract<ConditionAtom, { kind: "divergence" }>,
+): boolean {
+  const confirmedPivot = index - PIVOT_WING;
+  if (confirmedPivot < PIVOT_WING) return false;
+  const bullish = atom.direction === "bullish";
+  if (!isPivot(candles, confirmedPivot, bullish)) return false;
+
+  const from = Math.max(PIVOT_WING, index - atom.lookback);
+  for (let prev = confirmedPivot - PIVOT_WING - 1; prev >= from; prev--) {
+    if (!isPivot(candles, prev, bullish)) continue;
+    const oscPrev = osc[prev];
+    const oscCurr = osc[confirmedPivot];
+    if (oscPrev === null || oscCurr === null) return false;
+    if (bullish) {
+      return candles[confirmedPivot].low < candles[prev].low && oscCurr > oscPrev;
+    }
+    return candles[confirmedPivot].high > candles[prev].high && oscCurr < oscPrev;
+  }
+  return false;
+}
+
+function isPivot(candles: Candle[], index: number, low: boolean): boolean {
+  for (let w = 1; w <= PIVOT_WING; w++) {
+    if (index - w < 0 || index + w >= candles.length) return false;
+    if (low) {
+      if (candles[index].low >= candles[index - w].low) return false;
+      if (candles[index].low >= candles[index + w].low) return false;
+    } else {
+      if (candles[index].high <= candles[index - w].high) return false;
+      if (candles[index].high <= candles[index + w].high) return false;
+    }
+  }
+  return true;
+}
