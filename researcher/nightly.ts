@@ -16,6 +16,7 @@ import type { SignalTf } from "./grammar.ts";
 import { runIncubation, type IncubationSummary } from "./incubate.ts";
 import { DB_PATH, DEFAULT_VAULT_DIR } from "./paths.ts";
 import { runScreen, type ScreenSummary } from "./screen.ts";
+import { writeStatus } from "./statusFile.ts";
 import { runSupervision, type SupervisionSummary } from "./supervise.ts";
 import { TrialLedger, STATES } from "./ledger.ts";
 
@@ -130,6 +131,7 @@ ${[historyLine, ...history].join("\n")}
 }
 
 async function main(): Promise<void> {
+  const startedAt = Date.now();
   const n = Number(process.env.RESEARCHER_NIGHT_N ?? 2000);
   const tfs = (process.env.RESEARCHER_TFS ?? "1h,4h")
     .split(",")
@@ -155,6 +157,12 @@ async function main(): Promise<void> {
     buildDigest(date, screens, incubation, supervision, stateCensus(DB_PATH), history),
     "utf-8",
   );
+  writeStatus({
+    screens,
+    incubation,
+    supervision,
+    durationMin: Math.round((Date.now() - startedAt) / 60_000),
+  });
   console.log(JSON.stringify({ screens, incubation, supervision }, null, 2));
 }
 

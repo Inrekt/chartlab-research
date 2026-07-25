@@ -11,6 +11,11 @@ concurrency:
   group: research-data
   cancel-in-progress: false
 
+# Ночь коммитит обезличенный статус в СВОЙ (публичный) репозиторий — журнал
+# по-прежнему уходит в приватный по deploy-ключу.
+permissions:
+  contents: write
+
 jobs:
   night:
     runs-on: ubuntu-latest
@@ -36,6 +41,7 @@ jobs:
         env:
           RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
           RESEARCHER_VAULT_DIR: ${{ github.workspace }}/data/vault
+          RESEARCHER_STATUS_DIR: ${{ github.workspace }}/status
           RESEARCHER_NIGHT_N: "2000"
         run: npx tsx researcher/nightly.ts > night-summary.json
 
@@ -46,4 +52,12 @@ jobs:
           git config user.email "bot@users.noreply.github.com"
           git add -A
           git diff --cached --quiet || git commit -m "night $(date -u '+%F %H:%M') UTC"
+          git push
+
+      - name: Publish anonymised status (monitor in the app reads this)
+        run: |
+          git config user.name "chartlab-research-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add status/status.json
+          git diff --cached --quiet || git commit -m "status: night $(date -u '+%F %H:%M') UTC"
           git push

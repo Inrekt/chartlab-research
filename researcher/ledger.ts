@@ -238,6 +238,25 @@ export class TrialLedger {
     return rows.map(toTrialRow);
   }
 
+  /**
+   * Последние переходы по всему журналу, свежие первыми — лента для монитора.
+   * Отдаёт candidateId, но наружу он не уходит: status.ts обезличивает всё
+   * через publicRef перед публикацией.
+   */
+  recentTransitions(
+    limit: number,
+  ): { candidateId: string; toState: TrialState; reason: string; createdAt: string }[] {
+    const rows = this.db
+      .prepare("SELECT * FROM transitions ORDER BY id DESC LIMIT ?")
+      .all(limit) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      candidateId: r.candidate_id as string,
+      toState: r.to_state as TrialState,
+      reason: r.reason as string,
+      createdAt: r.created_at as string,
+    }));
+  }
+
   /** История переходов кандидата — источник таймштампов заморозки/выпуска. */
   transitionsFor(
     candidate: string,

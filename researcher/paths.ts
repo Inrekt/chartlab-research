@@ -19,3 +19,11 @@ export const OUTBOX_DIR = join(CHARTLAB_HOME, "outbox");
 export const DEFAULT_VAULT_DIR =
   process.env.RESEARCHER_VAULT_DIR ??
   "/Users/user/Desktop/obsidian vault/obsidian vault/ChartLab";
+
+/**
+ * Публичный агрегат статуса — единственное, что уходит наружу для монитора в
+ * приложении. Лежит ОТДЕЛЬНО от журнала: журнал приватен, статус обезличен и
+ * коммитится в публичный репозиторий (см. status.ts).
+ */
+export const STATUS_DIR = process.env.RESEARCHER_STATUS_DIR ?? join(CHARTLAB_HOME, "status");
+export const STATUS_PATH = join(STATUS_DIR, "status.json");
