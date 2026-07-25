@@ -56,5 +56,13 @@ jobs:
           git config user.name "chartlab-research-bot"
           git config user.email "bot@users.noreply.github.com"
           git add status/status.json
-          git diff --cached --quiet || git commit -m "status: tick $(date -u '+%F %H:%M') UTC"
-          git push
+          git diff --cached --quiet && exit 0
+          git commit -m "status: tick $(date -u '+%F %H:%M') UTC"
+          # Публичный репозиторий получает и коммиты с кодом, поэтому push
+          # без ребейза однажды упал бы non-fast-forward и уронил тик.
+          for attempt in 1 2 3; do
+            git pull --rebase --autostash origin main && git push && exit 0
+            sleep 5
+          done
+          echo "не удалось опубликовать статус после трёх попыток" >&2
+          exit 1
