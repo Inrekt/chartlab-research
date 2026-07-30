@@ -79,44 +79,58 @@ BEGIN SELECT RAISE(ABORT, 'cluster_reps is append-only'); END;
 export class CorrelationClusterer {
   private readonly db: DatabaseSync;
   private readonly now: () => string;
-  private reps: { key: string; fp: Fingerprint }[] | null = null;
+  private reps: { key: string; tf: string | null; fp: Fingerprint }[] | null = null;
 
   constructor(path: string, opts?: { now?: () => string }) {
     this.db = new DatabaseSync(path);
     this.now = opts?.now ?? (() => new Date().toISOString());
     this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec(SCHEMA);
+    // Миграция эпохи-2: колонка ТФ. ALTER не трогает append-only триггеры
+    // (они защищают строки, не схему); старые представители остаются с NULL —
+    // это смешанная эпоха-1, к ней новые отпечатки не примеряются.
+    const cols = this.db.prepare("PRAGMA table_info(cluster_reps)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "tf")) {
+      this.db.exec("ALTER TABLE cluster_reps ADD COLUMN tf TEXT");
+    }
   }
 
-  private loadReps(): { key: string; fp: Fingerprint }[] {
+  private loadReps(): { key: string; tf: string | null; fp: Fingerprint }[] {
     if (this.reps) return this.reps;
     const rows = this.db
-      .prepare("SELECT cluster_key, start_week, values_json FROM cluster_reps ORDER BY rowid")
-      .all() as { cluster_key: string; start_week: number; values_json: string }[];
+      .prepare("SELECT cluster_key, tf, start_week, values_json FROM cluster_reps ORDER BY rowid")
+      .all() as { cluster_key: string; tf: string | null; start_week: number; values_json: string }[];
     this.reps = rows.map((r) => ({
       key: r.cluster_key,
+      tf: r.tf,
       fp: { startWeek: r.start_week, values: JSON.parse(r.values_json) as number[] },
     }));
     return this.reps;
   }
 
   /**
-   * Возвращает ключ кластера для отпечатка: первый представитель с |ρ| ≥ 0.7,
-   * иначе отпечаток сам становится представителем нового кластера.
+   * Возвращает ключ кластера для отпечатка: первый представитель ТОГО ЖЕ ТФ
+   * с |ρ| ≥ 0.7, иначе отпечаток сам становится представителем нового
+   * кластера. Сравнение только внутри ТФ: суточные PnL часового и
+   * четырёхчасового прогонов — разные ряды, эпоха-1 смешивала их в одном
+   * жадном проходе без обоснования.
    */
-  clusterFor(fp: Fingerprint): string {
+  clusterFor(fp: Fingerprint, tf: string): string {
     const reps = this.loadReps();
+    let sameTf = 0;
     for (const rep of reps) {
+      if (rep.tf !== tf) continue;
+      sameTf += 1;
       const rho = alignedPearson(fp, rep.fp);
       if (rho !== null && Math.abs(rho) >= CLUSTER_RHO) return rep.key;
     }
-    const key = `corr:${reps.length + 1}`;
+    const key = `corr:${tf}:${sameTf + 1}`;
     this.db
       .prepare(
-        "INSERT INTO cluster_reps(cluster_key, start_week, values_json, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO cluster_reps(cluster_key, tf, start_week, values_json, created_at) VALUES (?, ?, ?, ?, ?)",
       )
-      .run(key, fp.startWeek, JSON.stringify(fp.values), this.now());
-    reps.push({ key, fp });
+      .run(key, tf, fp.startWeek, JSON.stringify(fp.values), this.now());
+    reps.push({ key, tf, fp });
     return key;
   }
 

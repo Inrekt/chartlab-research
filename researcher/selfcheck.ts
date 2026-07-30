@@ -122,7 +122,8 @@ export function runNullGauntlet(runs: number, seed: number, tf: SignalTf): NullG
 
   const perGate: Record<string, number> = {};
   let fullPasses = 0;
-  const specs = sampleCandidates(seed, runs);
+  // ТФ пинится к корпусу гаунтлета — метка спеки честная, как в эпохе-2.
+  const specs = sampleCandidates(seed, runs, undefined, { tf });
 
   for (let r = 0; r < specs.length; r++) {
     const config = toStrategyConfig(specs[r]);

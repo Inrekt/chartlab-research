@@ -454,6 +454,19 @@ export function candidateId(spec: CandidateSpec): string {
   return `${spec.setup}|${spec.direction}|${spec.timeframe}|${filters}|s${stopAtr}t${takeR}b${maxBars}`;
 }
 
+/**
+ * Поведенческий id — спека БЕЗ таймфрейма. Бэктест исполняет правило на
+ * корпусе ночи, поэтому два кандидата, различающиеся только меткой ТФ,
+ * дают побайтово одинаковые сделки. Дедупликация «правило уже гонялось на
+ * этом корпусе» обязана сравнивать именно это, иначе одна идея сгорает из
+ * журнала трижды (эпоха-1 так и потеряла ~⅔ бюджета каждой ночи).
+ */
+export function behavioralId(spec: CandidateSpec): string {
+  const filters = spec.filters.length > 0 ? spec.filters.join("+") : "none";
+  const { stopAtr, takeR, maxBars } = spec.exit;
+  return `${spec.setup}|${spec.direction}|${filters}|s${stopAtr}t${takeR}b${maxBars}`;
+}
+
 /** Ключ корреляционного кластера по умолчанию (до настоящей кластеризации
  * по доходностям): семейство × ТФ × направление. */
 export function defaultClusterKey(spec: CandidateSpec): string {
@@ -536,6 +549,18 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+export interface SampleOptions {
+  /**
+   * Реальный ТФ прогона. Задан — каждый кандидат получает его вместо
+   * случайной метки. До этой опции метка ТФ была фикцией: сэмплер тянул её
+   * из трёх значений, а движок поле не читал — треть партии числилась «1d»
+   * при том, что ночь 1d не запускалась ни разу.
+   */
+  tf?: SignalTf;
+  /** Поведенческие id (без ТФ), уже РЕАЛЬНО прогнанные на корпусе этого ТФ. */
+  excludeBehavioral?: ReadonlySet<string>;
+}
+
 /**
  * Выборка n УНИКАЛЬНЫХ кандидатов с приорами по семействам сетапов.
  * exclude — id, уже лежащие в журнале (их не выдаём повторно).
@@ -544,6 +569,7 @@ export function sampleCandidates(
   seed: number,
   n: number,
   exclude?: ReadonlySet<string>,
+  options?: SampleOptions,
 ): CandidateSpec[] {
   const rand = mulberry32(seed);
   const totalPrior = SETUPS.reduce((sum, s) => sum + s.prior, 0);
@@ -565,12 +591,18 @@ export function sampleCandidates(
     const spec: CandidateSpec = {
       setup: setup.id,
       direction: DIRECTIONS[Math.floor(rand() * DIRECTIONS.length)],
-      timeframe: SIGNAL_TFS[Math.floor(rand() * SIGNAL_TFS.length)],
+      // rand() зовётся в любом случае: детерминизм партии от сида не должен
+      // зависеть от того, передан ли tf.
+      timeframe: ((): SignalTf => {
+        const rolled = SIGNAL_TFS[Math.floor(rand() * SIGNAL_TFS.length)];
+        return options?.tf ?? rolled;
+      })(),
       filters: combos[Math.floor(rand() * combos.length)],
       exit: EXITS[Math.floor(rand() * EXITS.length)],
     };
     const id = candidateId(spec);
     if (seen.has(id) || exclude?.has(id)) continue;
+    if (options?.excludeBehavioral?.has(behavioralId(spec))) continue;
     seen.add(id);
     picked.push(spec);
   }

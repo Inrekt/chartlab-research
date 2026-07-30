@@ -53,6 +53,7 @@ import {
 } from "./batchDiagnostics.ts";
 import { CorrelationClusterer, weeklyFingerprint } from "./clustering.ts";
 import { TrialLedger } from "./ledger.ts";
+import { behavioralExclusionFor, GATE_VERSION, markEpoch } from "./epochs.ts";
 
 export const STAGE_A_SYMBOLS = 16;
 export const STAGE_B_SYMBOLS = 128;
@@ -161,8 +162,16 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   const stageASymbols = halvingSubset(search, STAGE_A_SYMBOLS, HALVING_SALT);
   const stageBSymbols = halvingSubset(search, STAGE_B_SYMBOLS, HALVING_SALT);
 
-  const specs = sampleCandidates(opts.seed, opts.n, ledger.allCandidateIds());
+  // Эпоха-2: кандидат несёт РЕАЛЬНЫЙ ТФ ночи, а повторы блокируются по
+  // поведению (правило × корпус), а не по ярлыку — см. epochs.ts.
+  markEpoch(opts.dbPath);
+  const excludeBehavioral = behavioralExclusionFor(opts.dbPath, opts.tf);
+  const specs = sampleCandidates(opts.seed, opts.n, ledger.allCandidateIds(), {
+    tf: opts.tf,
+    excludeBehavioral,
+  });
   const { inserted } = ledger.registerCandidates(specs);
+  const batchId = `${opts.tf}:${opts.seed}`;
   log(`Партия: ${specs.length} кандидатов (${inserted} новых). Вселенная ${opts.tf}: ` +
     `${search.length} поисковых + ${holdout.length} отложенных символов.`);
 
@@ -176,8 +185,20 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     const trades = tradesA.get(id)!;
     const net = statsAfterCosts(trades).expectancy;
     const netRs = netRMultiples(trades);
-    if (netRs.length >= 5) stageASharpes.push(tradeSharpe(netRs));
-    ledger.recordEval(id, "halving_16", { trades: trades.length, netExpectancy: net });
+    // Только кандидаты, прошедшие порог активности: Шарп на 5–7 сделках —
+    // шумовая бомба (SD ≈ 0.45), эпоха-1 такими задирала дисперсию партии и
+    // через неё планку E[max] ВСЕМ финалистам (√varSR 0.079 вместо ~0.03).
+    if (trades.length >= STAGE_A_MIN_TRADES && netRs.length >= 5) {
+      stageASharpes.push(tradeSharpe(netRs));
+    }
+    ledger.recordEval(id, "halving_16", {
+      trades: trades.length,
+      netExpectancy: net,
+      runTf: opts.tf,
+      seed: opts.seed,
+      batchId,
+      gateVersion: GATE_VERSION,
+    });
     if (trades.length < STAGE_A_MIN_TRADES) {
       reject(id, "halving_16", `халвинг-16: лишь ${trades.length} сделок`);
     } else if (net <= 0) {
@@ -215,7 +236,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
       try {
         ledger.setClusterKey(
           id,
-          clusterer.clusterFor(weeklyFingerprint(matrix.returns[i], matrix.startDay)),
+          clusterer.clusterFor(weeklyFingerprint(matrix.returns[i], matrix.startDay), opts.tf),
         );
         assigned += 1;
       } catch {
@@ -244,6 +265,8 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
       trades: trades.length,
       netExpectancy: net,
       positiveShare,
+      runTf: opts.tf,
+      gateVersion: GATE_VERSION,
     });
     if (trades.length < STAGE_B_MIN_TRADES) {
       reject(id, "halving_128", `халвинг-128: лишь ${trades.length} сделок`);
