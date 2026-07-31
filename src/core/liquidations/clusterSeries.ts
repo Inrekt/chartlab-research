@@ -1,0 +1,168 @@
+import type { Candle } from "../types";
+import { atr } from "../indicators";
+
+/**
+ * ПРИЧИННЫЕ скопления ликвидности — по бару за баром, без единого взгляда
+ * вперёд.
+ *
+ * Зачем отдельно от estimateHeatmap.ts: та карта строится по ВСЕЙ истории
+ * сразу (плотность на баре i включает позиции, открытые после i). Для
+ * картинки это нормально, для бэктеста — заглядывание в будущее, которое
+ * нарисует несуществующий край. Здесь на каждом баре видно только прошлое.
+ *
+ * Модель ликвидности — трейдерская, а не биржевая: скопление это уровень,
+ * ЗА которым стоят чужие стопы. Такие уровни рождаются на подтверждённых
+ * экстремумах (свинг-хай/лоу) и живут, пока цена их не сняла. Равные
+ * максимумы усиливают уровень: чем больше раз к нему подходили, тем больше
+ * стопов за ним накопилось.
+ *
+ * Что отдаётся наружу — не список уровней (его дорого хранить на каждый
+ * бар), а четыре числа на бар, которых достаточно и правилу входа, и
+ * выходам от уровней:
+ *   nearAbove/nearBelow — цена БЛИЖАЙШЕГО живого скопления (магнит-цель);
+ *   farAbove/farBelow   — цена САМОГО ДАЛЬНЕГО в окне (за него ставится стоп);
+ *   weightAbove/Below   — сила ближайшего (сколько касаний накопил);
+ *   atrAt               — ATR бара, чтобы мерить расстояния в ATR.
+ */
+
+/** Сколько баров с каждой стороны обязаны быть ниже/выше — подтверждение пивота. */
+export const PIVOT_WING = 3;
+/** Уровни ближе этого расстояния (в долях ATR) считаются одним и тем же. */
+export const MERGE_ATR = 0.25;
+/** Дальше этого (в ATR) уровень уже не «впереди», а другая история. */
+export const HORIZON_ATR = 12;
+/** Потолок живых уровней с каждой стороны — защита от квадратичного роста. */
+const MAX_ACTIVE = 64;
+
+export interface LiquidityFeatures {
+  /** Цена ближайшего живого скопления выше/ниже; NaN — нет такого. */
+  nearAbove: Float64Array;
+  nearBelow: Float64Array;
+  /** Самое дальнее живое скопление в пределах горизонта — «вся ликвидность». */
+  farAbove: Float64Array;
+  farBelow: Float64Array;
+  /** Сила ближайшего скопления: 1 + число повторных касаний. */
+  weightAbove: Float64Array;
+  weightBelow: Float64Array;
+  /** ATR того же бара — единица измерения расстояний. */
+  atrAt: Float64Array;
+}
+
+interface Level {
+  price: number;
+  weight: number;
+}
+
+/** Пивот-хай: строго выше PIVOT_WING соседей с обеих сторон. */
+function isPivotHigh(candles: readonly Candle[], i: number): boolean {
+  const h = candles[i].high;
+  for (let w = 1; w <= PIVOT_WING; w++) {
+    if (candles[i - w].high >= h || candles[i + w].high >= h) return false;
+  }
+  return true;
+}
+
+function isPivotLow(candles: readonly Candle[], i: number): boolean {
+  const l = candles[i].low;
+  for (let w = 1; w <= PIVOT_WING; w++) {
+    if (candles[i - w].low <= l || candles[i + w].low <= l) return false;
+  }
+  return true;
+}
+
+/** Добавляет уровень, сливая с близким: равные максимумы копят вес. */
+function addLevel(levels: Level[], price: number, tolerance: number): void {
+  for (const lv of levels) {
+    if (Math.abs(lv.price - price) <= tolerance) {
+      lv.weight += 1;
+      // цену держим у более раннего уровня: стопы стоят там, где их поставили
+      return;
+    }
+  }
+  levels.push({ price, weight: 1 });
+}
+
+export function liquidityFeatures(candles: readonly Candle[]): LiquidityFeatures {
+  const n = candles.length;
+  const out: LiquidityFeatures = {
+    nearAbove: new Float64Array(n).fill(NaN),
+    nearBelow: new Float64Array(n).fill(NaN),
+    farAbove: new Float64Array(n).fill(NaN),
+    farBelow: new Float64Array(n).fill(NaN),
+    weightAbove: new Float64Array(n).fill(NaN),
+    weightBelow: new Float64Array(n).fill(NaN),
+    atrAt: new Float64Array(n).fill(NaN),
+  };
+  if (n === 0) return out;
+
+  // ATR по времени бара — совмещаем с индексом
+  const atrByTime = new Map<number, number>();
+  for (const p of atr(candles as Candle[])) atrByTime.set(p.time, p.value);
+
+  // Живые уровни: выше рынка (стопы шортистов) и ниже (стопы лонгистов).
+  const above: Level[] = [];
+  const below: Level[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const bar = candles[i];
+    const a = atrByTime.get(bar.time) ?? NaN;
+    out.atrAt[i] = a;
+
+    // 1. Снятие: уровень исчезает, как только цена его коснулась. Делаем это
+    //    ДО чтения фич — на баре снятия уровня уже нет, он отработал.
+    for (let k = above.length - 1; k >= 0; k--) {
+      if (bar.high >= above[k].price) above.splice(k, 1);
+    }
+    for (let k = below.length - 1; k >= 0; k--) {
+      if (bar.low <= below[k].price) below.splice(k, 1);
+    }
+
+    // 2. Рождение: пивот подтверждается только через PIVOT_WING баров после
+    //    экстремума, поэтому на баре i мы вправе узнать о пивоте на i-WING.
+    const p = i - PIVOT_WING;
+    if (p >= PIVOT_WING && p + PIVOT_WING < n) {
+      const tolAtr = atrByTime.get(candles[p].time);
+      const tol = Number.isFinite(tolAtr) ? (tolAtr as number) * MERGE_ATR : 0;
+      if (isPivotHigh(candles, p)) addLevel(above, candles[p].high, tol);
+      if (isPivotLow(candles, p)) addLevel(below, candles[p].low, tol);
+      if (above.length > MAX_ACTIVE) above.splice(0, above.length - MAX_ACTIVE);
+      if (below.length > MAX_ACTIVE) below.splice(0, below.length - MAX_ACTIVE);
+    }
+
+    if (!Number.isFinite(a) || a <= 0) continue;
+    const horizon = a * HORIZON_ATR;
+    const price = bar.close;
+
+    // 3. Чтение фич: ближайший и самый дальний уровень в горизонте.
+    let nearA = NaN;
+    let farA = NaN;
+    let wA = NaN;
+    for (const lv of above) {
+      if (lv.price <= price || lv.price - price > horizon) continue;
+      if (!Number.isFinite(nearA) || lv.price < nearA) {
+        nearA = lv.price;
+        wA = lv.weight;
+      }
+      if (!Number.isFinite(farA) || lv.price > farA) farA = lv.price;
+    }
+    let nearB = NaN;
+    let farB = NaN;
+    let wB = NaN;
+    for (const lv of below) {
+      if (lv.price >= price || price - lv.price > horizon) continue;
+      if (!Number.isFinite(nearB) || lv.price > nearB) {
+        nearB = lv.price;
+        wB = lv.weight;
+      }
+      if (!Number.isFinite(farB) || lv.price < farB) farB = lv.price;
+    }
+    out.nearAbove[i] = nearA;
+    out.farAbove[i] = farA;
+    out.weightAbove[i] = wA;
+    out.nearBelow[i] = nearB;
+    out.farBelow[i] = farB;
+    out.weightBelow[i] = wB;
+  }
+
+  return out;
+}
