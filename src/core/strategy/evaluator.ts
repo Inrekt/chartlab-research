@@ -148,20 +148,81 @@ function channelLine(
 }
 
 /**
+ * Ключ кэша серии. JSON.stringify на каждый вызов valueAt был второй половиной
+ * всего времени бэктеста (4 операнда × каждый бар × 44к баров); ref-объекты
+ * стратегии стабильны на всю её жизнь, поэтому строка считается один раз.
+ */
+const refKeyCache = new WeakMap<IndicatorRef, string>();
+const divergenceRefCache = new WeakMap<object, IndicatorRef>();
+function refKey(ref: IndicatorRef): string {
+  let key = refKeyCache.get(ref);
+  if (!key) {
+    key = JSON.stringify(ref);
+    refKeyCache.set(ref, key);
+  }
+  return key;
+}
+
+/**
+ * Разделяемый кэш индикаторных серий НА МАССИВ СВЕЧЕЙ, переживающий отдельные
+ * бэктесты. Серия зависит только от (свечи, ref) — не от стратегии, а ночной
+ * скрин гоняет тысячи кандидатов по одному и тому же символу: без этого кэша
+ * одна и та же SMA200 считалась заново на каждого кандидата (~10 000 полных
+ * проходов вместо ~25 уникальных на символ).
+ *
+ * Инвалидация — по отпечатку (длина, время краёв, последний close): живой
+ * график дописывает бары в тот же массив и мутирует close последнего бара,
+ * оба случая обязаны сбрасывать кэш. Правки середины истории не отслеживаются
+ * — так никто не делает; появится такой код — сначала поменять это место.
+ */
+interface SharedSeriesEntry {
+  len: number;
+  firstTime: number;
+  lastTime: number;
+  lastClose: number;
+  series: Map<string, (number | null)[]>;
+}
+const sharedSeriesCache = new WeakMap<Candle[], SharedSeriesEntry>();
+
+export function sharedSeriesCacheFor(candles: Candle[]): Map<string, (number | null)[]> {
+  const first = candles[0];
+  const last = candles[candles.length - 1];
+  let entry = sharedSeriesCache.get(candles);
+  if (
+    !entry ||
+    entry.len !== candles.length ||
+    entry.firstTime !== (first?.time ?? 0) ||
+    entry.lastTime !== (last?.time ?? 0) ||
+    entry.lastClose !== (last?.close ?? 0)
+  ) {
+    entry = {
+      len: candles.length,
+      firstTime: first?.time ?? 0,
+      lastTime: last?.time ?? 0,
+      lastClose: last?.close ?? 0,
+      series: new Map(),
+    };
+    sharedSeriesCache.set(candles, entry);
+  }
+  return entry.series;
+}
+
+/**
  * Precomputes and caches every indicator series a strategy references, so
  * evaluating bar-by-bar during a backtest is O(1) per condition instead of
  * recomputing full indicator history at every bar.
  */
 export class EvaluationContext {
-  private cache = new Map<string, (number | null)[]>();
+  private cache: Map<string, (number | null)[]>;
   private candles: Candle[];
 
   constructor(candles: Candle[]) {
     this.candles = candles;
+    this.cache = sharedSeriesCacheFor(candles);
   }
 
   private seriesFor(ref: IndicatorRef): (number | null)[] {
-    const key = JSON.stringify(ref);
+    const key = refKey(ref);
     let series = this.cache.get(key);
     if (!series) {
       series = resolveIndicatorSeries(this.candles, ref);
@@ -216,8 +277,13 @@ export class EvaluationContext {
     }
 
     if (atom.kind === "divergence") {
-      const oscRef: IndicatorRef =
-        atom.osc === "rsi" ? { kind: "rsi", period: atom.period ?? 14 } : { kind: "macd" };
+      // ref мемоизирован на атом: свежий объект на каждый бар пробивал бы
+      // WeakMap-ключ и возвращал JSON.stringify в горячий путь.
+      let oscRef = divergenceRefCache.get(atom);
+      if (!oscRef) {
+        oscRef = atom.osc === "rsi" ? { kind: "rsi", period: atom.period ?? 14 } : { kind: "macd" };
+        divergenceRefCache.set(atom, oscRef);
+      }
       return matchesDivergence(this.candles, this.seriesFor(oscRef), index, atom);
     }
 

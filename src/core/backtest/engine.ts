@@ -1,5 +1,5 @@
 import type { Candle, StrategyConfig, TradeResult } from "../types";
-import { EvaluationContext } from "../strategy/evaluator";
+import { EvaluationContext, sharedSeriesCacheFor } from "../strategy/evaluator";
 import { atr as atrIndicator } from "../indicators";
 
 interface OpenPosition {
@@ -90,7 +90,16 @@ export function simulateExits(
 }
 
 function atrSeriesFor(candles: Candle[], config: StrategyConfig): (number | null)[] | null {
-  return config.exit.stopLoss.type === "atr" ? alignAtr(candles, atrIndicator(candles)) : null;
+  if (config.exit.stopLoss.type !== "atr") return null;
+  // ATR(14) не зависит от конфига вообще — но пересчитывался на КАЖДОГО
+  // кандидата (2000 раз на символ за ночь). Живёт в общем кэше серий символа.
+  const cache = sharedSeriesCacheFor(candles);
+  let series = cache.get("engine:atr14");
+  if (!series) {
+    series = alignAtr(candles, atrIndicator(candles));
+    cache.set("engine:atr14", series);
+  }
+  return series;
 }
 
 /** Opens a position filled at `signalIndex + 1`'s open, or null if risk is unknowable. */
