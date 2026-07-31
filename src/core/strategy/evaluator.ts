@@ -1,6 +1,8 @@
 import type { Candle, ConditionAtom, ConditionGroup, IndicatorRef } from "../types";
+import { cachedLiquidityFeatures } from "../liquidations/clusterSeries";
 import {
   adx,
+  atr as atrIndicator,
   atrChannel,
   bollinger,
   cci,
@@ -154,6 +156,19 @@ function channelLine(
  */
 const refKeyCache = new WeakMap<IndicatorRef, string>();
 const divergenceRefCache = new WeakMap<object, IndicatorRef>();
+
+/** Стабильные ref-объекты для растянутости: свежий на каждый бар пробивал бы кэш. */
+/** Общий с движком ключ кэша ATR — одна линейка на входы и на стопы. */
+export const ATR_CACHE_KEY = "engine:atr14";
+const stretchRefs = new Map<number, IndicatorRef>();
+function stretchRefFor(period: number): IndicatorRef {
+  let ref = stretchRefs.get(period);
+  if (!ref) {
+    ref = { kind: "sma", period };
+    stretchRefs.set(period, ref);
+  }
+  return ref;
+}
 function refKey(ref: IndicatorRef): string {
   let key = refKeyCache.get(ref);
   if (!key) {
@@ -237,6 +252,21 @@ export class EvaluationContext {
     return series[index] ?? null;
   }
 
+  /**
+   * ATR(14), выровненный по индексу свечей. Ключ кэша тот же, что у движка
+   * (engine.ts), — ряд считается один раз на символ и делится между
+   * условиями входа и расчётом стопа: иначе «растянутость на 2 ATR» и
+   * «стоп 2 ATR» мерили бы разными линейками.
+   */
+  private atrAt(index: number): number | null {
+    let series = this.cache.get(ATR_CACHE_KEY);
+    if (!series) {
+      series = alignByTime(this.candles, atrIndicator(this.candles));
+      this.cache.set(ATR_CACHE_KEY, series);
+    }
+    return series[index] ?? null;
+  }
+
   private resolveOperand(operand: IndicatorRef | number, index: number): number | null {
     return typeof operand === "number" ? operand : this.valueAt(operand, index);
   }
@@ -274,6 +304,26 @@ export class EvaluationContext {
 
     if (atom.kind === "time") {
       return matchesTime(this.candles[index], atom);
+    }
+
+    if (atom.kind === "stretch") {
+      const sma = this.seriesFor(stretchRefFor(atom.period))[index];
+      const a = this.atrAt(index);
+      if (sma === null || a === null || a <= 0) return false;
+      const gap = (this.candles[index].close - sma) / a;
+      return atom.direction === "above" ? gap >= atom.minAtr : gap <= -atom.minAtr;
+    }
+
+    if (atom.kind === "liquidity") {
+      const f = cachedLiquidityFeatures(this.candles);
+      const a = f.atrAt[index];
+      if (!Number.isFinite(a) || a <= 0) return false;
+      const price = this.candles[index].close;
+      const level = atom.side === "above" ? f.nearAbove[index] : f.nearBelow[index];
+      const weight = atom.side === "above" ? f.weightAbove[index] : f.weightBelow[index];
+      if (!Number.isFinite(level) || !Number.isFinite(weight)) return false;
+      const distance = Math.abs(level - price) / a;
+      return distance >= atom.minAtr && distance <= atom.maxAtr && weight >= atom.minWeight;
     }
 
     if (atom.kind === "divergence") {

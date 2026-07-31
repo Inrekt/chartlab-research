@@ -82,6 +82,45 @@ function addLevel(levels: Level[], price: number, tolerance: number): void {
   levels.push({ price, weight: 1 });
 }
 
+/**
+ * Мемоизация по массиву свечей — та же схема, что у кэша индикаторных серий
+ * движка: расчёт зависит только от свечей, а ночь гоняет по одному символу
+ * тысячи кандидатов. Инвалидация по отпечатку (длина, края, последний
+ * close) — живой график дописывает бары в тот же массив.
+ */
+interface CachedFeatures {
+  len: number;
+  firstTime: number;
+  lastTime: number;
+  lastClose: number;
+  features: LiquidityFeatures;
+}
+const featuresCache = new WeakMap<readonly Candle[], CachedFeatures>();
+
+export function cachedLiquidityFeatures(candles: readonly Candle[]): LiquidityFeatures {
+  const first = candles[0];
+  const last = candles[candles.length - 1];
+  const hit = featuresCache.get(candles);
+  if (
+    hit &&
+    hit.len === candles.length &&
+    hit.firstTime === (first?.time ?? 0) &&
+    hit.lastTime === (last?.time ?? 0) &&
+    hit.lastClose === (last?.close ?? 0)
+  ) {
+    return hit.features;
+  }
+  const features = liquidityFeatures(candles);
+  featuresCache.set(candles, {
+    len: candles.length,
+    firstTime: first?.time ?? 0,
+    lastTime: last?.time ?? 0,
+    lastClose: last?.close ?? 0,
+    features,
+  });
+  return features;
+}
+
 export function liquidityFeatures(candles: readonly Candle[]): LiquidityFeatures {
   const n = candles.length;
   const out: LiquidityFeatures = {

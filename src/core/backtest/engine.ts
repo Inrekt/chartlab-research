@@ -1,5 +1,6 @@
 import type { Candle, StrategyConfig, TradeResult } from "../types";
 import { EvaluationContext, sharedSeriesCacheFor } from "../strategy/evaluator";
+import { cachedLiquidityFeatures, type LiquidityFeatures } from "../liquidations/clusterSeries";
 import { atr as atrIndicator } from "../indicators";
 
 interface OpenPosition {
@@ -23,6 +24,7 @@ export function runBacktest(candles: Candle[], config: StrategyConfig, symbol: s
 
   const ctx = new EvaluationContext(candles);
   const atrSeries = atrSeriesFor(candles, config);
+  const liq = exitNeedsLiquidity(config) ? cachedLiquidityFeatures(candles) : null;
 
   const trades: TradeResult[] = [];
   let open: OpenPosition | null = null;
@@ -39,7 +41,7 @@ export function runBacktest(candles: Candle[], config: StrategyConfig, symbol: s
 
     const passesFilters = !config.filters || ctx.evaluateGroup(config.filters, i);
     if (passesFilters && ctx.evaluateGroup(config.entry, i)) {
-      open = openPositionAt(candles, config, i, atrSeries);
+      open = openPositionAt(candles, config, i, atrSeries, liq);
     }
   }
 
@@ -70,6 +72,7 @@ export function simulateExits(
   if (candles.length < 2) return [];
 
   const atrSeries = atrSeriesFor(candles, config);
+  const liq = exitNeedsLiquidity(config) ? cachedLiquidityFeatures(candles) : null;
   const wanted = new Set(entryIndices);
   const trades: TradeResult[] = [];
   let open: OpenPosition | null = null;
@@ -83,7 +86,7 @@ export function simulateExits(
       }
       continue;
     }
-    if (wanted.has(i)) open = openPositionAt(candles, config, i, atrSeries);
+    if (wanted.has(i)) open = openPositionAt(candles, config, i, atrSeries, liq);
   }
 
   return trades;
@@ -102,26 +105,66 @@ function atrSeriesFor(candles: Candle[], config: StrategyConfig): (number | null
   return series;
 }
 
+/** Нужны ли выходам уровни ликвидности (тогда ряд считается один раз на символ). */
+export function exitNeedsLiquidity(config: StrategyConfig): boolean {
+  return config.exit.stopLoss.type === "liquidity" || config.exit.takeProfit.type === "liquidity";
+}
+
 /** Opens a position filled at `signalIndex + 1`'s open, or null if risk is unknowable. */
 function openPositionAt(
   candles: Candle[],
   config: StrategyConfig,
   signalIndex: number,
   atrSeries: (number | null)[] | null,
+  liq: LiquidityFeatures | null,
 ): OpenPosition | null {
   const fillBar = candles[signalIndex + 1];
   const entryPrice = fillBar.open;
-  const risk = computeRisk(config, entryPrice, atrSeries?.[signalIndex] ?? null);
-  if (risk === null) return null;
+  const long = config.direction === "long";
 
-  const stopPrice = config.direction === "long" ? entryPrice - risk : entryPrice + risk;
-  const rewardDistance =
-    config.exit.takeProfit.type === "rr"
-      ? risk * config.exit.takeProfit.value
-      : config.exit.takeProfit.type === "percent"
-        ? entryPrice * (config.exit.takeProfit.value / 100)
-        : config.exit.takeProfit.value;
-  const targetPrice = config.direction === "long" ? entryPrice + rewardDistance : entryPrice - rewardDistance;
+  // ── Стоп ────────────────────────────────────────────────────────────────
+  let stopPrice: number;
+  if (config.exit.stopLoss.type === "liquidity") {
+    const atrValue = liq?.atrAt[signalIndex] ?? NaN;
+    if (!Number.isFinite(atrValue) || atrValue <= 0) return null;
+    const buffer = config.exit.stopLoss.value * atrValue;
+    // «За всей ликвидностью»: за самым дальним живым скоплением ПРОТИВ сделки.
+    const far = long ? liq!.farBelow[signalIndex] : liq!.farAbove[signalIndex];
+    // Скоплений против сделки нет — стоп вырождается в обычный ATR-стоп той
+    // же ширины. Иначе правило молча стало бы «без стопа».
+    const base = Number.isFinite(far) ? far : entryPrice;
+    stopPrice = long ? base - buffer : base + buffer;
+  } else {
+    const risk = computeRisk(config, entryPrice, atrSeries?.[signalIndex] ?? null);
+    if (risk === null) return null;
+    stopPrice = long ? entryPrice - risk : entryPrice + risk;
+  }
+  const risk = Math.abs(entryPrice - stopPrice);
+  if (!(risk > 0)) return null;
+
+  // ── Цель ────────────────────────────────────────────────────────────────
+  let targetPrice: number;
+  if (config.exit.takeProfit.type === "liquidity") {
+    const atrValue = liq?.atrAt[signalIndex] ?? NaN;
+    if (!Number.isFinite(atrValue) || atrValue <= 0) return null;
+    const near = long ? liq!.nearAbove[signalIndex] : liq!.nearBelow[signalIndex];
+    // Нет магнита впереди — сделки нет: у этой стратегии цель НЕ произвольна,
+    // она и есть смысл входа.
+    if (!Number.isFinite(near)) return null;
+    // Отступ не доходя до уровня: толпа целится в сам уровень, исполнение там
+    // худшее.
+    const pull = config.exit.takeProfit.value * atrValue;
+    targetPrice = long ? near - pull : near + pull;
+    if (long ? targetPrice <= entryPrice : targetPrice >= entryPrice) return null;
+  } else {
+    const rewardDistance =
+      config.exit.takeProfit.type === "rr"
+        ? risk * config.exit.takeProfit.value
+        : config.exit.takeProfit.type === "percent"
+          ? entryPrice * (config.exit.takeProfit.value / 100)
+          : config.exit.takeProfit.value;
+    targetPrice = long ? entryPrice + rewardDistance : entryPrice - rewardDistance;
+  }
 
   return {
     direction: config.direction,

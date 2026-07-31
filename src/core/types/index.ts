@@ -96,7 +96,24 @@ export type ConditionAtom =
    * без заглядывания вперёд). Срабатывает ТОЛЬКО на баре подтверждения второго
    * пивота, чтобы сигнал не «горел» много баров подряд.
    */
-  | { kind: "divergence"; osc: "rsi" | "macd"; direction: "bullish" | "bearish"; lookback: number; period?: number };
+  | { kind: "divergence"; osc: "rsi" | "macd"; direction: "bullish" | "bearish"; lookback: number; period?: number }
+  /**
+   * Растянутость цены от средней, В ATR — «уже переоценено жёстко».
+   * Именно в ATR, а не в процентах: 5% для BTC и для мем-коина это разные
+   * события, а в единицах собственной волатильности они сравнимы, и правило
+   * остаётся одним для всей вселенной.
+   */
+  | { kind: "stretch"; period: number; direction: "above" | "below"; minAtr: number }
+  /**
+   * Впереди по ходу сделки есть живое скопление ликвидности (уровень, за
+   * которым стоят чужие стопы) — магнит-цель. Расстояние меряется в ATR,
+   * плотность — в числе подходов к уровню.
+   *
+   * side: "above" — скопление выше цены (цель для лонга, стоп-зона для
+   * шорта), "below" — ниже. Считается ПРИЧИННО (clusterSeries.ts): на баре
+   * видно только прошлое.
+   */
+  | { kind: "liquidity"; side: "above" | "below"; minAtr: number; maxAtr: number; minWeight: number };
 
 export interface ConditionGroup {
   operator: "AND" | "OR";
@@ -112,8 +129,20 @@ export interface StrategyConfig {
   symbols: string[]; // instruments this strategy watches/is backtested against
   entry: ConditionGroup;
   exit: {
-    stopLoss: { type: "atr" | "percent" | "fixed"; value: number };
-    takeProfit: { type: "rr" | "percent" | "fixed"; value: number };
+    /**
+     * `liquidity` — стоп за ВСЕЙ ликвидностью против сделки: за самым дальним
+     * живым скоплением в горизонте, плюс запас `value` в ATR. Если скоплений
+     * против сделки нет, стоп вырождается в обычный ATR-стоп шириной `value`
+     * — иначе правило молча превратилось бы в «без стопа».
+     */
+    stopLoss: { type: "atr" | "percent" | "fixed" | "liquidity"; value: number };
+    /**
+     * `liquidity` — цель на ближайшем живом скоплении по ходу сделки
+     * (магнит). Цена цели берётся с ОТСТУПОМ `value` в ATR не доходя до
+     * уровня: толпа целится в сам уровень, поэтому исполнение там худшее.
+     * Нет скопления впереди — сделка не открывается вовсе (цели нет).
+     */
+    takeProfit: { type: "rr" | "percent" | "fixed" | "liquidity"; value: number };
     maxBarsInTrade?: number;
   };
   filters?: ConditionGroup;
