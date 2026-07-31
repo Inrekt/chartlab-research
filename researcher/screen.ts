@@ -19,9 +19,7 @@ import { pathToFileURL } from "node:url";
 import { DB_PATH } from "./paths.ts";
 import type { TradeResult } from "../src/core/types/index.ts";
 import { runBacktest } from "../src/core/backtest/engine.ts";
-import { computeStats } from "../src/core/backtest/stats.ts";
 import { statsAfterCosts, tradeCostInR } from "../src/core/committee/costModel.ts";
-import { runNullModel } from "../src/core/committee/nullModel.ts";
 import {
   candidateId,
   EXITS,
@@ -30,20 +28,20 @@ import {
   type CandidateSpec,
   type SignalTf,
 } from "./grammar.ts";
-import { halvingSubset, listUniverse, loadCandles, splitHoldout } from "./corpus.ts";
+import { clearCandleCache, halvingSubset, listUniverse, loadCandles, splitHoldout } from "./corpus.ts";
+import { scheduledNullGate } from "./nullSchedule.ts";
 import {
   gateActivity,
   gateBreadth,
   gateCostStress,
   gateDsr,
-  gateNull,
   gatePlateau,
   gateTemporal,
   gateWilson,
   type GateResult,
   type SymbolNet,
 } from "./gates.ts";
-import { benjaminiHochberg, median, moments, tradeSharpe, zToPValue } from "./stats.ts";
+import { benjaminiHochberg, moments, tradeSharpe } from "./stats.ts";
 import {
   buildDailyMatrix,
   cscvPbo,
@@ -60,7 +58,6 @@ export const STAGE_B_SYMBOLS = 128;
 const STAGE_A_MIN_TRADES = 8;
 const STAGE_B_MIN_TRADES = 40;
 const STAGE_B_MIN_POSITIVE_SHARE = 0.45;
-const NULL_SYMBOLS_PER_CANDIDATE = 5;
 export const FDR_Q = 0.1;
 /** Фиксированная соль деления пополам: стадия-16 — префикс стадии-128,
  * и обе стабильны от ночи к ночи (сравнимость журнала). */
@@ -150,6 +147,9 @@ export function neighborSpecs(spec: CandidateSpec): CandidateSpec[] {
 export function runScreen(opts: ScreenOptions): ScreenSummary {
   const log = opts.log ?? (() => {});
   mkdirSync(dirname(opts.dbPath), { recursive: true });
+  // Кэш свечей копится за прогон одной вселенной; между вселенными чистим,
+  // чтобы 1h и 4h не жили в памяти одновременно.
+  clearCandleCache();
   const ledger = new TrialLedger(opts.dbPath);
   const rejectedByGate: Record<string, number> = {};
   const reject = (id: string, gate: string, reason: string) => {
@@ -329,32 +329,31 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   });
   log(`  после плато: ${finalists.length}.`);
 
-  // G5: нуль-модель на топ-5 символах кандидата по числу сделок.
+  // G5 (v3): разностная нуль-модель с сохранением расписания — по ВСЕМ
+  // символам кандидата, статистика по дневному портфелю. Пороги
+  // пре-регистрированы: docs/gates-v3-preregistration.md.
   for (const f of finalists) {
     const bySymbol = new Map<string, TradeResult[]>();
     for (const t of f.trades) {
       (bySymbol.get(t.symbol) ?? bySymbol.set(t.symbol, []).get(t.symbol)!).push(t);
     }
-    const top = [...bySymbol.entries()]
-      .sort((a, b) => b[1].length - a[1].length)
-      .slice(0, NULL_SYMBOLS_PER_CANDIDATE);
-    const zScores: number[] = [];
-    for (const [symbol, symTrades] of top) {
-      const candles = loadCandles(symbol, opts.tf);
-      if (!candles) continue;
-      const result = runNullModel(
-        candles,
-        toStrategyConfig(f.spec),
-        symbol,
-        symTrades.length,
-        computeStats(symTrades).expectancy,
-      );
-      if (!result.skipped) zScores.push(result.zScore);
-    }
-    f.nullGate = gateNull(zScores);
-    const usable = zScores.filter(Number.isFinite);
-    // Честная медиана (не верхняя): иначе p-value на входе BH-FDR занижен.
-    f.pNull = zToPValue(usable.length > 0 ? median(usable) : 0);
+    const result = scheduledNullGate(
+      bySymbol,
+      toStrategyConfig(f.spec),
+      (symbol) => loadCandles(symbol, opts.tf),
+      opts.seed ^ 0x5eed,
+    );
+    f.nullGate = {
+      pass: result.pass,
+      reason: result.reason,
+      metrics: {
+        t: result.t,
+        days: result.days,
+        meanDiff: result.meanDiff,
+        gateVersion: GATE_VERSION,
+      },
+    };
+    f.pNull = result.pValue;
   }
 
   // G6: BH-FDR по всей партии, дошедшей до нуль-модели.

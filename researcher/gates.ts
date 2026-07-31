@@ -106,6 +106,13 @@ export function gateCostStress(allTrades: readonly TradeResult[]): GateResult {
 export const PLATEAU_NEIGHBOR_SHARE = 0.7;
 export const PLATEAU_PEAK_RATIO = 1.5;
 export const PLATEAU_MIN_NEIGHBORS = 3;
+/**
+ * v3: абсолютный допуск пика. Медиана соседей на 16 символах шумная; при
+ * медиане 0.02R любой кандидат выше 0.03R браковался «за успех» — 74 из 117
+ * смертей плато в эпохах 1-2. Пик карается только когда превышение ЗАМЕТНО
+ * в абсолюте. Пре-регистрация: docs/gates-v3-preregistration.md.
+ */
+export const PLATEAU_ABS_TOLERANCE = 0.05;
 
 export function gatePlateau(candidateNet: number, neighborNets: readonly number[]): GateResult {
   const metrics = {
@@ -121,9 +128,13 @@ export function gatePlateau(candidateNet: number, neighborNets: readonly number[
     return fail(`плато: лишь ${(positiveShare * 100).toFixed(0)}% соседей прибыльны — одинокий пик`, metrics);
   }
   const neighborMedian = median(neighborNets);
-  if (neighborMedian > 0 && candidateNet > PLATEAU_PEAK_RATIO * neighborMedian) {
+  if (
+    neighborMedian > 0 &&
+    candidateNet > PLATEAU_PEAK_RATIO * neighborMedian &&
+    candidateNet - neighborMedian > PLATEAU_ABS_TOLERANCE
+  ) {
     return fail(
-      `плато: кандидат ${candidateNet.toFixed(3)} > 1.5× медианы соседей ${neighborMedian.toFixed(3)}`,
+      `плато: кандидат ${candidateNet.toFixed(3)} > 1.5× медианы соседей ${neighborMedian.toFixed(3)} (+>${PLATEAU_ABS_TOLERANCE}R)`,
       { ...metrics, neighborMedian: Number(neighborMedian.toFixed(4)) },
     );
   }

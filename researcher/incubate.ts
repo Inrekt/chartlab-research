@@ -27,8 +27,12 @@ import { TrialLedger } from "./ledger.ts";
 import { expectedAcceptSampleSize, sprtDecide } from "./sprt.ts";
 import type { Candle } from "../src/core/types/index.ts";
 
-/** Входной порог инкубатора: край тоньше 0.20R не окупит даже календарь. */
-export const ENTRY_GATE_EXPECTANCY = 0.2;
+/**
+ * Входной порог инкубатора v3 — в δ = μ₁/σ (сигнал/шум), не в абсолютных R:
+ * кандидаты с одинаковым краем, но разным σ имеют кратно разные шансы дожить
+ * до вердикта. δ ≥ 0.18 ⇔ E[N] ≤ ~150 сделок при α=0.05, β=0.1.
+ */
+export const ENTRY_GATE_DELTA = 0.18;
 /** Прогрев индикаторов перед первым интересующим баром (SMA200 + перцентиль волы). */
 export const WARMUP_BARS = 600;
 export const MAX_TRADES_CAP = 150;
@@ -131,17 +135,33 @@ export async function runIncubation(opts: {
       continue;
     }
     const netExpectancy = Number(seed.metrics.netExpectancy);
-    if (netExpectancy < ENTRY_GATE_EXPECTANCY) {
-      ledger.transition(
-        trial.candidateId,
-        "REJECTED",
-        `входной порог инкубатора: ${netExpectancy.toFixed(3)}R < ${ENTRY_GATE_EXPECTANCY}R`,
-      );
+    // NaN-щит: NaN < порога = false, и кандидат с битым посевом уезжал бы в
+    // инкубацию с mu1=NaN и вечным «continue» до смерти по календарю.
+    if (!Number.isFinite(netExpectancy)) {
+      ledger.transition(trial.candidateId, "REJECTED", "входной порог инкубатора: netExpectancy не число");
       summary.rejectedAtEntry += 1;
       continue;
     }
     const sigma = Math.max(Number(seed.metrics.sigma), SIGMA_FLOOR);
     const mu1 = netExpectancy / 2; // скептичная половина Бентера
+    /**
+     * v3: порог входа в δ = μ₁/σ, а не в абсолютных R. Старая пара
+     * (0.20R; cap 150) была внутренне противоречива: допускала кандидатов,
+     * которым для решения нужно 475–1027 сделок, и обрывала тест на 150 —
+     * 98–99.7% «усечений» при любой истине. δ ≥ 0.18 ⇔ E[N] ≤ ~150 при
+     * α=0.05, β=0.1 — входной билет согласован с длиной теста.
+     * Пре-регистрация: docs/gates-v3-preregistration.md.
+     */
+    const delta = mu1 / sigma;
+    if (delta < ENTRY_GATE_DELTA) {
+      ledger.transition(
+        trial.candidateId,
+        "REJECTED",
+        `входной порог инкубатора: δ=${delta.toFixed(3)} < ${ENTRY_GATE_DELTA} (μ₁=${mu1.toFixed(3)}R, σ=${sigma.toFixed(2)})`,
+      );
+      summary.rejectedAtEntry += 1;
+      continue;
+    }
     const expectedN = expectedAcceptSampleSize(mu1, sigma);
     // Заморозка — время ПЕРЕХОДА в VALIDATED из журнала переходов, а не
     // updated_at: тот мутирует (например, setClusterKey) и сдвинул бы границу
@@ -233,8 +253,10 @@ export async function runIncubation(opts: {
       }
       continue;
     }
-    // continue: усечение — «не смог решить» тоже решение.
-    const tradeCap = Math.min(3 * inc.expectedN, MAX_TRADES_CAP);
+    // continue: усечение — «не смог решить» тоже решение. v3: потолок —
+    // честные 3×E[N] (вход по δ гарантирует E[N] ≤ ~150, так что жёсткий
+    // MAX_TRADES_CAP больше не обрубает тест на середине).
+    const tradeCap = Math.ceil(3 * inc.expectedN);
     if (rows.length >= tradeCap) {
       ledger.transition(
         trial.candidateId,

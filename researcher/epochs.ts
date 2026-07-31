@@ -31,8 +31,14 @@
 import { DatabaseSync } from "node:sqlite";
 import { behavioralId, type CandidateSpec, type SignalTf } from "./grammar.ts";
 
-/** Версия прибора; пишется в каждую eval. Историю версий см. в шапке. */
-export const GATE_VERSION = 2;
+/**
+ * Версия прибора; пишется в каждую eval.
+ * 2 — эпоха-2: честный ТФ, поведенческий дедуп, чистая планка (2026-07-31).
+ * 3 — ворота v3: разностная нуль-модель с расписанием (t≥2.6 по дневному
+ *     портфелю), допуск плато 0.05R, δ-вход инкубатора 0.18 (2026-07-31,
+ *     пре-регистрация docs/gates-v3-preregistration.md).
+ */
+export const GATE_VERSION = 3;
 
 /** Порядок ТФ внутри ночи эпохи-1 — дословно дефолт RESEARCHER_TFS. */
 const EPOCH1_NIGHT_TFS: readonly SignalTf[] = ["1h", "4h"];

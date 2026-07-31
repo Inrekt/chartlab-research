@@ -70,12 +70,31 @@ export function halvingSubset(symbols: readonly string[], n: number, salt: numbe
     .slice(0, n);
 }
 
+/**
+ * Мемо-кэш распакованных свечей. Гаунтлет v3 (нуль-модель по всем символам
+ * кандидата) и плато перечитывают одни и те же файлы десятки раз за ночь;
+ * gunzip+parse на файл — сотни мс. Вся вселенная одного ТФ ≈ 0.7 ГБ — на
+ * раннере помещается, но между вселенными кэш чистится (см. clearCandleCache
+ * в runScreen), чтобы 1h и 4h не жили в памяти одновременно.
+ */
+const candleCache = new Map<string, Candle[] | null>();
+
+export function clearCandleCache(): void {
+  candleCache.clear();
+}
+
 export function loadCandles(
   symbol: string,
   tf: SignalTf,
   historyDir = HISTORY_DIR,
 ): Candle[] | null {
+  const key = `${historyDir}|${symbol}|${tf}`;
+  const cached = candleCache.get(key);
+  if (cached !== undefined) return cached;
   const path = join(historyDir, `${safeFilename(symbol)}_${tf}.json.gz`);
-  if (!existsSync(path)) return null;
-  return JSON.parse(gunzipSync(readFileSync(path)).toString("utf-8")) as Candle[];
+  const candles = existsSync(path)
+    ? (JSON.parse(gunzipSync(readFileSync(path)).toString("utf-8")) as Candle[])
+    : null;
+  candleCache.set(key, candles);
+  return candles;
 }
