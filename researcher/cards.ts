@@ -10,7 +10,9 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TradeResult } from "../src/core/types/index.ts";
 import { tradeCostInR } from "../src/core/committee/costModel.ts";
-import { SETUPS, type CandidateSpec } from "./grammar.ts";
+import { SETUPS, type CandidateSpec,
+  isLiquidityExit,
+} from "./grammar.ts";
 import { DEFAULT_VAULT_DIR } from "./paths.ts";
 import type { IncubationRow, PaperTradeRow } from "./incubationBook.ts";
 import { CUSUM_H, CUSUM_K } from "./cusum.ts";
@@ -84,6 +86,21 @@ export function quarterKellyPct(netRs: readonly number[]): number {
   return Math.min(1, (kelly / 4) * 100);
 }
 
+/** Правила выхода словами — карточку читает человек, а не машина. */
+function exitLines(exit: CandidateSpec["exit"]): string {
+  if (isLiquidityExit(exit)) {
+    return [
+      `- **Стоп:** за самым дальним скоплением ликвидности против сделки, плюс запас ${exit.stopBufferAtr} × ATR(14)`,
+      `- **Тейк:** у ближайшего скопления ликвидности по ходу сделки, не доходя ${exit.targetPullAtr} × ATR(14)`,
+      "- **Если скоплений впереди нет — сделки нет:** цель здесь и есть смысл входа",
+    ].join("\n");
+  }
+  return [
+    `- **Стоп:** ${exit.stopAtr} × ATR(14) от цены входа`,
+    `- **Тейк:** ${exit.takeR}R (${exit.takeR} × расстояние до стопа)`,
+  ].join("\n");
+}
+
 export function buildCard(input: CardInput): string {
   const { spec, incubation, trades } = input;
   // NET-цифры: Келли на брутто завысил бы размер позиции — карточка обязана
@@ -123,8 +140,7 @@ status: active
 - **Вход:** ${SETUP_RU[spec.setup] ?? spec.setup}
 - **Подтверждения (все обязательны):**
 ${filterLines}
-- **Стоп:** ${spec.exit.stopAtr} × ATR(14) от цены входа
-- **Тейк:** ${spec.exit.takeR}R (${spec.exit.takeR} × расстояние до стопа)
+${exitLines(spec.exit)}
 - **Время:** позиция закрывается через ${spec.exit.maxBars} баров, если не вышла раньше
 - **Инструменты:** ${incubation.symbols.join(", ")}
 - Вход по цене открытия СЛЕДУЮЩЕГО бара после сигнального. Один инструмент —

@@ -184,9 +184,14 @@ describe("neighborSpecs", () => {
     expect(neighborSpecs(spec(1.5, 1, 10))).toHaveLength(3);
   });
   test("neighbors differ from the candidate in exactly one exit dimension", () => {
-    for (const n of neighborSpecs(spec(2, 2, 20))) {
+    const base = spec(2, 2, 20);
+    for (const n of neighborSpecs(base)) {
+      // у rr-семейств сетап не меняется, отличается ровно одно измерение выхода
+      expect(n.setup).toBe(base.setup);
+      const baseExit = base.exit as { stopAtr: number; takeR: number; maxBars: number };
+      const nExit = n.exit as { stopAtr: number; takeR: number; maxBars: number };
       const diffs = (["stopAtr", "takeR", "maxBars"] as const).filter(
-        (d) => n.exit[d] !== spec(2, 2, 20).exit[d],
+        (d) => nExit[d] !== baseExit[d],
       );
       expect(diffs).toHaveLength(1);
     }

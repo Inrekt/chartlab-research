@@ -194,10 +194,17 @@ export interface SetupDef {
   requiresContext?: readonly FilterFamily[];
   /** Семейства, дублирующие условие самого сетапа, — из комбо исключаются. */
   excludeFamilies?: readonly FilterFamily[];
+  /**
+   * Правило самодостаточно: комбинации фильтров НЕ перебираются вовсе.
+   * Для семейств, где параметры живут в самом сетапе (ликвидити-магнит),
+   * добавление 13 фильтров раздуло бы комбинаторику в 252 раза — ровно та
+   * подгонка, от которой защищает пре-регистрация малого пространства.
+   */
+  fixedRule?: boolean;
   build: (dir: Direction) => ConditionAtom[];
 }
 
-export const SETUPS: readonly SetupDef[] = [
+const BASE_SETUPS: readonly SetupDef[] = [
   {
     id: "trend_cross_50",
     family: "trend_following",
@@ -422,21 +429,159 @@ export const SETUPS: readonly SetupDef[] = [
   },
 ];
 
+
+// ── Семейство «ликвидити-магнит» (стратегия владельца) ──────────────────────
+// Пре-регистрация: docs/family-liquidity-magnet-preregistration.md.
+// Параметры вынесены в сетапы, а не в фильтры: они и есть правило, а не
+// подтверждение. 3 порога растянутости × 3 порога плотности × 2 окна = 18
+// сетапов; вместе с 3 запасами стопа, 2 направлениями и 2 ТФ — ровно 216
+// вариаций, как записано заранее.
+const LIQ_STRETCH_ATRS = [1.5, 2.5, 3.5] as const;
+const LIQ_MIN_WEIGHTS = [1, 2, 3] as const;
+const LIQ_WINDOWS: readonly (readonly [number, number])[] = [
+  [1, 6],
+  [2, 10],
+] as const;
+
+export interface LiquidityParams {
+  stretchAtr: number;
+  minWeight: number;
+  window: readonly [number, number];
+}
+
+const LIQ_PARAMS = new Map<string, LiquidityParams>();
+
+function liquiditySetupId(p: LiquidityParams): string {
+  return `liqmag_x${p.stretchAtr}_w${p.minWeight}_r${p.window[0]}-${p.window[1]}`;
+}
+
+const LIQUIDITY_SETUPS: readonly SetupDef[] = LIQ_STRETCH_ATRS.flatMap((stretchAtr) =>
+  LIQ_MIN_WEIGHTS.flatMap((minWeight) =>
+    LIQ_WINDOWS.map((window) => {
+      const params: LiquidityParams = { stretchAtr, minWeight, window };
+      const id = liquiditySetupId(params);
+      LIQ_PARAMS.set(id, params);
+      return {
+        id,
+        family: "liquidity_magnet",
+        fixedRule: true,
+        // Приор невелик: семейство новое и непроверенное, а перекос выборки
+        // в его пользу был бы формой подгонки под ожидание владельца.
+        prior: 2,
+        // Контекстные фильтры не требуются и не исключаются: правило
+        // самодостаточно (растянутость + магнит), фильтры лишь сужают.
+        build: (dir: Direction): ConditionAtom[] => {
+          // Шорт: цена растянута ВВЕРХ, магнит СНИЗУ. Лонг зеркально.
+          const short = dir === "short";
+          return [
+            {
+              kind: "stretch",
+              period: 50,
+              direction: short ? "above" : "below",
+              minAtr: stretchAtr,
+            },
+            {
+              kind: "liquidity",
+              side: short ? "below" : "above",
+              minAtr: window[0],
+              maxAtr: window[1],
+              minWeight,
+            },
+          ];
+        },
+      } satisfies SetupDef;
+    }),
+  ),
+);
+
+export const SETUPS: readonly SetupDef[] = [...BASE_SETUPS, ...LIQUIDITY_SETUPS];
+
+/**
+ * Соседи сетапа по СЕТКЕ ПАРАМЕТРОВ семейства — ±1 шаг по одному измерению.
+ * Нужны воротам плато: у этого семейства почти вся параметризация живёт в
+ * сетапе, а не в выходе, поэтому без этого у кандидата было бы меньше трёх
+ * соседей и плато отсекло бы семейство целиком, ничего не проверив.
+ * Для остальных семейств — пусто: их соседи задаются сеткой выходов.
+ */
+export function setupNeighbors(setupId: string): string[] {
+  const p = LIQ_PARAMS.get(setupId);
+  if (!p) return [];
+  const out: string[] = [];
+  const step = <T,>(grid: readonly T[], current: T, make: (v: T) => LiquidityParams) => {
+    const i = grid.indexOf(current);
+    for (const d of [-1, 1]) {
+      const j = i + d;
+      if (j < 0 || j >= grid.length) continue;
+      const id = liquiditySetupId(make(grid[j]));
+      if (LIQ_PARAMS.has(id)) out.push(id);
+    }
+  };
+  step(LIQ_STRETCH_ATRS, p.stretchAtr as (typeof LIQ_STRETCH_ATRS)[number], (v) => ({ ...p, stretchAtr: v }));
+  step(LIQ_MIN_WEIGHTS, p.minWeight as (typeof LIQ_MIN_WEIGHTS)[number], (v) => ({ ...p, minWeight: v }));
+  step(LIQ_WINDOWS, LIQ_WINDOWS.find((w) => w[0] === p.window[0] && w[1] === p.window[1])!, (v) => ({
+    ...p,
+    window: v,
+  }));
+  return out;
+}
+
+/** Выходы, допустимые для сетапа: у семейства — свои, уровневые. */
+export function exitsFor(setupId: string): readonly ExitSpec[] {
+  return LIQ_PARAMS.has(setupId) ? LIQUIDITY_EXITS : EXITS;
+}
+
 const SETUPS_BY_ID = new Map(SETUPS.map((s) => [s.id, s]));
 
-export interface ExitSpec {
+/**
+ * Выход кратностью риска: стоп в ATR, цель в R. `kind` опционален —
+ * записи журнала эпох 1-2 его не несут, и их id обязаны читаться так же.
+ */
+export interface RrExit {
+  kind?: "rr";
   stopAtr: number;
   takeR: number;
   maxBars: number;
+}
+
+/**
+ * Выход от уровней ликвидности: стоп ЗА всей ликвидностью против сделки с
+ * запасом в ATR, цель — не доходя до ближайшего скопления по ходу. Риск
+ * здесь ПЕРЕМЕННЫЙ (зависит от расположения уровней), поэтому «takeR» у
+ * такой стратегии не существует в принципе — см. обобщение ворот Уилсона.
+ */
+export interface LiquidityExit {
+  kind: "liquidity";
+  stopBufferAtr: number;
+  targetPullAtr: number;
+  maxBars: number;
+}
+
+export type ExitSpec = RrExit | LiquidityExit;
+
+export function isLiquidityExit(exit: ExitSpec): exit is LiquidityExit {
+  return exit.kind === "liquidity";
 }
 
 const STOPS = [1.5, 2, 3] as const;
 const TAKES = [1, 2, 3] as const;
 const MAX_BARS = [10, 20, 40] as const;
 
-export const EXITS: readonly ExitSpec[] = STOPS.flatMap((stopAtr) =>
+export const EXITS: readonly RrExit[] = STOPS.flatMap((stopAtr) =>
   TAKES.flatMap((takeR) => MAX_BARS.map((maxBars) => ({ stopAtr, takeR, maxBars }))),
 );
+
+/** Запас за дальней ликвидностью, в ATR — единственное измерение выхода семейства. */
+const LIQ_STOP_BUFFERS = [0.25, 0.5, 1] as const;
+/** Отступ цели не доходя до уровня и потолок баров — зафиксированы пре-регистрацией. */
+const LIQ_TARGET_PULL = 0.2;
+const LIQ_MAX_BARS = 40;
+
+export const LIQUIDITY_EXITS: readonly LiquidityExit[] = LIQ_STOP_BUFFERS.map((stopBufferAtr) => ({
+  kind: "liquidity" as const,
+  stopBufferAtr,
+  targetPullAtr: LIQ_TARGET_PULL,
+  maxBars: LIQ_MAX_BARS,
+}));
 
 export interface CandidateSpec {
   setup: string;
@@ -450,8 +595,15 @@ export interface CandidateSpec {
 /** Канонический id: сам является полной записью спеки — хэш не нужен. */
 export function candidateId(spec: CandidateSpec): string {
   const filters = spec.filters.length > 0 ? spec.filters.join("+") : "none";
-  const { stopAtr, takeR, maxBars } = spec.exit;
-  return `${spec.setup}|${spec.direction}|${spec.timeframe}|${filters}|s${stopAtr}t${takeR}b${maxBars}`;
+  return `${spec.setup}|${spec.direction}|${spec.timeframe}|${filters}|${exitTag(spec.exit)}`;
+}
+
+/** Кодировка выхода в id. Форма rr неизменна с эпохи 1 — журнал сравним. */
+function exitTag(exit: ExitSpec): string {
+  if (isLiquidityExit(exit)) {
+    return `q${exit.stopBufferAtr}p${exit.targetPullAtr}b${exit.maxBars}`;
+  }
+  return `s${exit.stopAtr}t${exit.takeR}b${exit.maxBars}`;
 }
 
 /**
@@ -463,8 +615,7 @@ export function candidateId(spec: CandidateSpec): string {
  */
 export function behavioralId(spec: CandidateSpec): string {
   const filters = spec.filters.length > 0 ? spec.filters.join("+") : "none";
-  const { stopAtr, takeR, maxBars } = spec.exit;
-  return `${spec.setup}|${spec.direction}|${filters}|s${stopAtr}t${takeR}b${maxBars}`;
+  return `${spec.setup}|${spec.direction}|${filters}|${exitTag(spec.exit)}`;
 }
 
 /** Ключ корреляционного кластера по умолчанию (до настоящей кластеризации
@@ -488,6 +639,12 @@ export function filterCombosFor(setupId: string): readonly (readonly string[])[]
   if (cached) return cached;
   const setup = SETUPS_BY_ID.get(setupId);
   if (!setup) throw new Error(`неизвестный сетап: ${setupId}`);
+
+  if (setup.fixedRule) {
+    const only: (readonly string[])[] = [[]];
+    combosCache.set(setupId, only);
+    return only;
+  }
 
   const families = FILTER_FAMILIES.filter((f) => !setup.excludeFamilies?.includes(f));
   const combos: (readonly string[])[] = [];
@@ -517,9 +674,12 @@ export function filterCombosFor(setupId: string): readonly (readonly string[])[]
 
 /** Точный размер закрытого пространства — «каждая попытка исчислима». */
 export function grammarSize(): number {
-  let combos = 0;
-  for (const setup of SETUPS) combos += filterCombosFor(setup.id).length;
-  return combos * EXITS.length * DIRECTIONS.length * SIGNAL_TFS.length;
+  // У семейства ликвидности свой набор выходов — считаем по сетапам.
+  let total = 0;
+  for (const setup of SETUPS) {
+    total += filterCombosFor(setup.id).length * exitsFor(setup.id).length;
+  }
+  return total * DIRECTIONS.length * SIGNAL_TFS.length;
 }
 
 /** Полное перечисление пространства (ленивое — для подсчётов и аудита). */
@@ -528,7 +688,7 @@ export function* enumerateAll(): Generator<CandidateSpec> {
     for (const filters of filterCombosFor(setup.id)) {
       for (const direction of DIRECTIONS) {
         for (const timeframe of SIGNAL_TFS) {
-          for (const exit of EXITS) {
+          for (const exit of exitsFor(setup.id)) {
             yield { setup: setup.id, direction, timeframe, filters, exit };
           }
         }
@@ -598,7 +758,10 @@ export function sampleCandidates(
         return options?.tf ?? rolled;
       })(),
       filters: combos[Math.floor(rand() * combos.length)],
-      exit: EXITS[Math.floor(rand() * EXITS.length)],
+      exit: (() => {
+        const pool = exitsFor(setup.id);
+        return pool[Math.floor(rand() * pool.length)];
+      })(),
     };
     const id = candidateId(spec);
     if (seen.has(id) || exclude?.has(id)) continue;
@@ -639,8 +802,15 @@ export function toStrategyConfig(spec: CandidateSpec): StrategyConfig {
     symbols: [],
     entry,
     exit: {
-      stopLoss: { type: "atr", value: spec.exit.stopAtr },
-      takeProfit: { type: "rr", value: spec.exit.takeR },
+      ...(isLiquidityExit(spec.exit)
+        ? {
+            stopLoss: { type: "liquidity" as const, value: spec.exit.stopBufferAtr },
+            takeProfit: { type: "liquidity" as const, value: spec.exit.targetPullAtr },
+          }
+        : {
+            stopLoss: { type: "atr" as const, value: spec.exit.stopAtr },
+            takeProfit: { type: "rr" as const, value: spec.exit.takeR },
+          }),
       maxBarsInTrade: spec.exit.maxBars,
     },
     filters,

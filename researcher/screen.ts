@@ -28,6 +28,9 @@ import { statsAfterCosts, tradeCostInR } from "../src/core/committee/costModel.t
 import {
   candidateId,
   EXITS,
+  isLiquidityExit,
+  LIQUIDITY_EXITS,
+  setupNeighbors,
   sampleCandidates,
   toStrategyConfig,
   type CandidateSpec,
@@ -140,21 +143,45 @@ export function netRMultiples(trades: readonly TradeResult[]): number[] {
   return trades.map((t) => t.rMultiple - tradeCostInR(t));
 }
 
-/** Соседи по сетке выходов: ±1 шаг по каждому из трёх измерений (≤6 штук). */
+/**
+ * Соседи по сетке ПАРАМЕТРОВ: ±1 шаг по каждому измерению. Для обычных
+ * семейств измерения живут в выходе (стоп/тейк/потолок баров), у
+ * ликвидити-магнита — ещё и в сетапе (порог растянутости, вес скопления,
+ * окно поиска). Без вторых у кандидата этого семейства было бы меньше трёх
+ * соседей, и ворота плато отсекли бы всё семейство, ничего не проверив.
+ */
 export function neighborSpecs(spec: CandidateSpec): CandidateSpec[] {
+  const out: CandidateSpec[] = [];
+
+  // Соседи по параметрам сетапа (непусто только у семейств с параметрами).
+  for (const setup of setupNeighbors(spec.setup)) {
+    out.push({ ...spec, setup });
+  }
+
+  if (isLiquidityExit(spec.exit)) {
+    const grid = [...new Set(LIQUIDITY_EXITS.map((e) => e.stopBufferAtr))].sort((a, b) => a - b);
+    const idx = grid.indexOf(spec.exit.stopBufferAtr);
+    for (const delta of [-1, 1]) {
+      const j = idx + delta;
+      if (j < 0 || j >= grid.length) continue;
+      out.push({ ...spec, exit: { ...spec.exit, stopBufferAtr: grid[j] } });
+    }
+    return out;
+  }
+
+  const rr = spec.exit;
   const steps = {
     stopAtr: [...new Set(EXITS.map((e) => e.stopAtr))].sort((a, b) => a - b),
     takeR: [...new Set(EXITS.map((e) => e.takeR))].sort((a, b) => a - b),
     maxBars: [...new Set(EXITS.map((e) => e.maxBars))].sort((a, b) => a - b),
   };
-  const out: CandidateSpec[] = [];
   for (const dim of ["stopAtr", "takeR", "maxBars"] as const) {
     const grid = steps[dim];
-    const idx = grid.indexOf(spec.exit[dim]);
+    const idx = grid.indexOf(rr[dim]);
     for (const delta of [-1, 1]) {
       const neighborIdx = idx + delta;
       if (neighborIdx < 0 || neighborIdx >= grid.length) continue;
-      out.push({ ...spec, exit: { ...spec.exit, [dim]: grid[neighborIdx] } });
+      out.push({ ...spec, exit: { ...rr, [dim]: grid[neighborIdx] } });
     }
   }
   return out;
@@ -417,7 +444,10 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     const netRs = netRMultiples(f.trades);
     const dsrGate = gateDsr(netRs, nEffective, batchSharpeVariance, debiasedBatchVariance);
     if (!applyGate("gate_dsr", f, dsrGate)) continue;
-    const wilsonGate = gateWilson(statsAfterCosts(f.trades), f.spec.exit.takeR);
+    const netStats = statsAfterCosts(f.trades);
+    // Реализованное соотношение выигрыш/проигрыш, а не номинальный takeR:
+    // у уровневых выходов риск переменный, и takeR там не существует.
+    const wilsonGate = gateWilson(netStats, netStats.avgRR);
     if (!applyGate("gate_wilson", f, wilsonGate)) continue;
 
     // G10, последнее и единственное честное «а работает ли оно ЗАВТРА»:

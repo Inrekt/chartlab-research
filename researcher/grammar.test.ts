@@ -95,8 +95,11 @@ describe("mapping to StrategyConfig", () => {
       expect(config.timeframe).toBe(spec.timeframe);
       expect(config.direction).toBe(spec.direction);
       expect(config.entry.conditions.length).toBeGreaterThan(0);
-      expect(config.exit.stopLoss).toEqual({ type: "atr", value: spec.exit.stopAtr });
-      expect(config.exit.takeProfit).toEqual({ type: "rr", value: spec.exit.takeR });
+      if (!("kind" in spec.exit) || spec.exit.kind !== "liquidity") {
+        const rr = spec.exit as { stopAtr: number; takeR: number };
+        expect(config.exit.stopLoss).toEqual({ type: "atr", value: rr.stopAtr });
+        expect(config.exit.takeProfit).toEqual({ type: "rr", value: rr.takeR });
+      }
       expect(config.exit.maxBarsInTrade).toBe(spec.exit.maxBars);
       if (spec.filters.length === 0) expect(config.filters).toBeUndefined();
       else expect(config.filters!.conditions).toHaveLength(spec.filters.length);

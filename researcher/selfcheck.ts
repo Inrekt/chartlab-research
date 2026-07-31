@@ -155,7 +155,7 @@ export function runNullGauntlet(runs: number, seed: number, tf: SignalTf): NullG
       ["cost_stress", () => gateCostStress(trades)],
       ["temporal", () => gateTemporal(trades)],
       ["dsr", () => gateDsr(netRMultiples(trades), NULL_GAUNTLET_CLUSTERS, 0.01)],
-      ["wilson", () => gateWilson(statsAfterCosts(trades), specs[r].exit.takeR)],
+      ["wilson", () => gateWilson(statsAfterCosts(trades), statsAfterCosts(trades).avgRR)],
     ] as const;
 
     let alive = true;

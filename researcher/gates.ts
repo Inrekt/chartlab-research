@@ -253,15 +253,26 @@ export function gateDsr(
 }
 
 // ── Ворота 9 (частично): Уилсон против безубытка ────────────────────────────
-export function gateWilson(netStats: BacktestStats, takeR: number): GateResult {
+/**
+ * payoffRatio — РЕАЛИЗОВАННОЕ отношение среднего выигрыша к среднему
+ * проигрышу (stats.avgRR), а не номинальный takeR из спеки. Две причины:
+ * у выходов от уровней риск переменный и takeR не существует в принципе, а
+ * у обычных издержки делают фактический payoff НИЖЕ номинала — то есть
+ * порог безубытка получается строже, а не мягче.
+ */
+export function gateWilson(netStats: BacktestStats, payoffRatio: number): GateResult {
   const total = netStats.totalTrades;
   const wins = Math.round(netStats.winRate * total);
-  const breakeven = 1 / (1 + takeR);
+  if (!(payoffRatio > 0)) {
+    return fail("Уилсон: соотношение выигрыш/проигрыш не положительно", { payoffRatio });
+  }
+  const breakeven = 1 / (1 + payoffRatio);
   const interval = wilsonInterval(wins, total);
   const metrics = {
     winRate: Number(netStats.winRate.toFixed(3)),
     wilsonLower: Number(interval.low.toFixed(3)),
     breakeven: Number(breakeven.toFixed(3)),
+    payoffRatio: Number(payoffRatio.toFixed(3)),
   };
   return interval.low > breakeven
     ? pass(metrics)
