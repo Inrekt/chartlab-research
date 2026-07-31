@@ -218,13 +218,76 @@ export function runGrid(streams: number, seed: number): CellReport[] {
   return out;
 }
 
+/** Сырой t дневного портфельного ряда — вход для выбора порогов. */
+export function pooledDailyT(stream: Stream): { t: number; days: number } {
+  const byDay = new Map<number, number>();
+  for (const t of stream.perSymbol.flat()) byDay.set(t.day, (byDay.get(t.day) ?? 0) + t.r);
+  const daily = [...byDay.values()];
+  const m = moments(daily);
+  return {
+    t: m.stdDev > 0 ? (m.mean * Math.sqrt(daily.length)) / m.stdDev : 0,
+    days: daily.length,
+  };
+}
+
+/** Пороги-кандидаты для OOT-ворот (12 мес — мощности сильно меньше). */
+export const OOT_THRESHOLDS = [0.5, 1.0, 1.3, 1.65, 2.0, 2.6] as const;
+
+interface OotRow {
+  mu: number;
+  rho: number;
+  medianT: number;
+  passRate: Record<string, number>;
+}
+
+/**
+ * Сетка для окна out-of-time: 12 месяцев, ~7 сделок на символ в год (по
+ * журналу кандидат имеет ~35 сделок на символ за 5 лет). Отвечает на вопрос
+ * «какой порог t даёт приемлемую пару (ложный проход, recall) на ГОДЕ
+ * данных» — в 5 раз меньше наблюдений, чем на полной истории.
+ */
+export function runOotSweep(streams: number, seed: number): OotRow[] {
+  const MUS = [0, 0.05, 0.1, 0.15];
+  const RHOS = [0.3, 0.6];
+  const out: OotRow[] = [];
+  for (const mu of MUS) {
+    for (const rho of RHOS) {
+      const ts: number[] = [];
+      for (let i = 0; i < streams; i++) {
+        const stream = generateStream({
+          mu, sigma: 1.1, rho, nSym: 100, tradesPerSym: 7, days: 365,
+          seed: seed + i * 6151 + Math.round(mu * 1000) * 17 + Math.round(rho * 10),
+        });
+        ts.push(pooledDailyT(stream).t);
+      }
+      const passRate: Record<string, number> = {};
+      for (const thr of OOT_THRESHOLDS) {
+        passRate[String(thr)] = Number((ts.filter((t) => t >= thr).length / streams).toFixed(3));
+      }
+      out.push({ mu, rho, medianT: Number(median(ts).toFixed(2)), passRate });
+    }
+  }
+  return out;
+}
+
 const arg = (name: string, fallback: string) => {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : fallback;
 };
 
 const isMain = process.argv[1]?.endsWith("calibrate.ts");
-if (isMain) {
+if (isMain && arg("mode", "gates") === "oot") {
+  const streams = Number(arg("streams", "400"));
+  const seed = Number(arg("seed", "20260731"));
+  const sweep = runOotSweep(streams, seed);
+  console.error(`OOT-окно: 365 дней, 100 символов × ~7 сделок/год, ${streams} потоков/ячейку`);
+  console.error(`μ(R)  ρ    медиана t | доля прохода при t ≥ ${OOT_THRESHOLDS.join(" / ")}`);
+  for (const r of sweep) {
+    const rates = OOT_THRESHOLDS.map((thr) => r.passRate[String(thr)].toFixed(2)).join("  ");
+    console.error(`${r.mu.toFixed(2)}  ${r.rho.toFixed(1)}   ${r.medianT.toFixed(2).padStart(6)}   |  ${rates}`);
+  }
+  console.log(JSON.stringify({ mode: "oot", streams, seed, sweep }, null, 1));
+} else if (isMain) {
   const streams = Number(arg("streams", "400"));
   const seed = Number(arg("seed", "20260731"));
   const grid = runGrid(streams, seed);

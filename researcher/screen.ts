@@ -3,9 +3,14 @@
  *
  * Конвейер за ночь: выборка свежих кандидатов из закрытой грамматики →
  * успешное деление пополам (16 → 128 символов — бюджет уходит выжившим) →
- * полный гаунтлет ворот в порядке «дешёвое → дорогое» (активность, ширина с
- * отложенными символами, стресс издержек ×2, плато Пардо, нуль-модель z≥3,
- * BH-FDR по всей партии, временна́я устойчивость, DSR≥0.95, Уилсон).
+ * полный гаунтлет ворот в порядке «дешёвое → дорогое»: активность, ширина с
+ * отложенными символами, стресс издержек ×2, плато Пардо, разностная
+ * нуль-модель с сохранением расписания (t≥2.6 по дневному портфелю),
+ * BH-FDR по всей партии, временна́я устойчивость, DSR≥0.95, Уилсон и
+ * последним — out-of-time окно (t≥1.3), которого не видела ни одна стадия.
+ *
+ * ВЕСЬ ПОИСК идёт по корпусу ДО границы OOT (corpus.OOT_CUTOFF_ISO); окно
+ * после границы кандидат видит ровно один раз, в последних воротах.
  *
  * Каждый шаг пишется в append-only журнал: recordEval — числа, transition —
  * вердикт с человекочитаемой причиной. Проход по корпусу — символ-мажорный:
@@ -28,8 +33,17 @@ import {
   type CandidateSpec,
   type SignalTf,
 } from "./grammar.ts";
-import { clearCandleCache, halvingSubset, listUniverse, loadCandles, splitHoldout } from "./corpus.ts";
-import { scheduledNullGate } from "./nullSchedule.ts";
+import {
+  clearCandleCache,
+  halvingSubset,
+  listUniverse,
+  loadCandlesWindow,
+  OOT_CUTOFF_ISO,
+  OOT_CUTOFF_SEC,
+  splitHoldout,
+  type CorpusWindow,
+} from "./corpus.ts";
+import { OOT_T_MIN, scheduledNullGate } from "./nullSchedule.ts";
 import {
   gateActivity,
   gateBreadth,
@@ -90,12 +104,14 @@ function runStage(
   symbols: readonly string[],
   tf: SignalTf,
   log?: (m: string) => void,
+  /** Окно корпуса. Весь поиск живёт в "in"; "oot" — только финальные ворота. */
+  window: CorpusWindow = "in",
 ): Map<string, TradeResult[]> {
   const configs = specs.map((spec) => ({ id: candidateId(spec), config: toStrategyConfig(spec) }));
   const acc = new Map<string, TradeResult[]>(configs.map((c) => [c.id, []]));
   let done = 0;
   for (const symbol of symbols) {
-    const candles = loadCandles(symbol, tf);
+    const candles = loadCandlesWindow(symbol, tf, window);
     done += 1;
     if (!candles) continue;
     for (const { id, config } of configs) {
@@ -161,6 +177,9 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   const { search, holdout } = splitHoldout(universe);
   const stageASymbols = halvingSubset(search, STAGE_A_SYMBOLS, HALVING_SALT);
   const stageBSymbols = halvingSubset(search, STAGE_B_SYMBOLS, HALVING_SALT);
+  /** Для окна out-of-time вселенная полная: отложенные символы там уже не
+   * «отложены» — время само делает срез честным, символы прятать не от кого. */
+  const ootSymbols = [...search, ...holdout];
 
   // Эпоха-2: кандидат несёт РЕАЛЬНЫЙ ТФ ночи, а повторы блокируются по
   // поведению (правило × корпус), а не по ярлыку — см. epochs.ts.
@@ -340,7 +359,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     const result = scheduledNullGate(
       bySymbol,
       toStrategyConfig(f.spec),
-      (symbol) => loadCandles(symbol, opts.tf),
+      (symbol) => loadCandlesWindow(symbol, opts.tf, "in"),
       opts.seed ^ 0x5eed,
     );
     f.nullGate = {
@@ -381,6 +400,45 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     if (!applyGate("gate_dsr", f, dsrGate)) continue;
     const wilsonGate = gateWilson(statsAfterCosts(f.trades), f.spec.exit.takeR);
     if (!applyGate("gate_wilson", f, wilsonGate)) continue;
+
+    // G10, последнее и единственное честное «а работает ли оно ЗАВТРА»:
+    // окно out-of-time, которого не видела ни одна стадия поиска. Патрон
+    // одноразовый — сюда доходят единицы кандидатов за ночь, поэтому прогон
+    // по всей вселенной здесь дёшев. Тест тот же (разностный, с сохранением
+    // расписания), порог ниже: на годе данных наблюдений в пять раз меньше,
+    // и t≥2.6 убивал бы 3/4 настоящих краёв (calibrate.ts --mode oot).
+    const ootRaw = runStage([f.spec], ootSymbols, opts.tf, undefined, "oot").get(f.id) ?? [];
+    const ootTrades = ootRaw.filter((t) => t.entryTime >= OOT_CUTOFF_SEC);
+    const ootBySymbol = new Map<string, TradeResult[]>();
+    for (const t of ootTrades) {
+      (ootBySymbol.get(t.symbol) ?? ootBySymbol.set(t.symbol, []).get(t.symbol)!).push(t);
+    }
+    const ootNull = scheduledNullGate(
+      ootBySymbol,
+      toStrategyConfig(f.spec),
+      (symbol) => loadCandlesWindow(symbol, opts.tf, "oot"),
+      opts.seed ^ 0x007007,
+      { minT: OOT_T_MIN, minEntryTime: OOT_CUTOFF_SEC },
+    );
+    const ootNet = statsAfterCosts(ootTrades).expectancy;
+    const ootGate: GateResult = {
+      pass: ootNull.pass && ootNet > 0,
+      reason: !ootNull.pass
+        ? `out-of-time (с ${OOT_CUTOFF_ISO.slice(0, 10)}): ${ootNull.reason ?? "не подтвердился"}`
+        : ootNet > 0
+          ? undefined
+          : `out-of-time: матожидание ${ootNet.toFixed(3)}R ≤ 0 после издержек`,
+      metrics: {
+        t: Number(ootNull.t.toFixed(3)),
+        days: ootNull.days,
+        trades: ootTrades.length,
+        netExpectancy: Number(ootNet.toFixed(4)),
+        cutoff: OOT_CUTOFF_ISO,
+        gateVersion: GATE_VERSION,
+      },
+    };
+    if (!applyGate("gate_oot", f, ootGate)) continue;
+
     // Посев для инкубатора (фаза R3): топ-символы по числу сделок + параметры
     // SPRT из бэктеста. Пишется ДО перехода — заморозка правил и данных вместе.
     const bySymbolCount = new Map<string, number>();

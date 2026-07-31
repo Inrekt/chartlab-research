@@ -31,6 +31,15 @@ import { moments } from "./stats.ts";
 export const SCHED_NULL_RUNS = 20;
 /** Порог разностного t — пре-регистрирован, по живым данным не трогать. */
 export const POOLED_T_MIN = 2.6;
+/**
+ * Порог того же теста на окне out-of-time. Ниже, чем in-sample, и это не
+ * поблажка, а арифметика мощности: на 12 месяцах наблюдений в пять раз
+ * меньше. Замер стенда (calibrate.ts --mode oot, 500 потоков): при t≥2.6
+ * OOT-ворота убивали бы 76-81% НАСТОЯЩИХ кандидатов с краем 0.10R; при
+ * t≥1.3 ложный проход 9%, recall 64-71%. OOT стоит последним — за ним ещё
+ * живой инкубатор, поэтому цена ложного пропуска ниже цены ложного отказа.
+ */
+export const OOT_T_MIN = 1.3;
 /** Минимум непустых дней разностного ряда. */
 export const MIN_CLUSTER_DAYS = 60;
 /** Первый допустимый сигнальный бар (прогрев индикаторов). */
@@ -84,6 +93,12 @@ export function sampleScheduledEntries(
   count: number,
   profile: ReadonlyMap<number, number>,
   rand: () => number,
+  /**
+   * Не брать бары, чей fill-бар раньше этого времени. Нужно для OOT-окна:
+   * туда подмешаны бары прогрева ДО границы, и без этого фильтра базлайн
+   * торговал бы в периоде, недоступном кандидату.
+   */
+  minFillTimeSec = 0,
 ): number[] {
   const lastSignal = candles.length - 2;
   if (lastSignal < FIRST_ELIGIBLE || count <= 0) return [];
@@ -91,6 +106,7 @@ export function sampleScheduledEntries(
   const byBucket = new Map<number, number[]>();
   const all: number[] = [];
   for (let i = FIRST_ELIGIBLE; i <= lastSignal; i++) {
+    if (candles[i + 1].time < minFillTimeSec) continue;
     const b = scheduleBucket(candles[i + 1].time);
     let list = byBucket.get(b);
     if (!list) {
@@ -100,6 +116,7 @@ export function sampleScheduledEntries(
     list.push(i);
     all.push(i);
   }
+  if (all.length === 0) return [];
   // рулетка по массе профиля
   const buckets = [...profile.entries()];
   const totalMass = buckets.reduce((s, [, n]) => s + n, 0);
@@ -149,7 +166,15 @@ export function scheduledNullGate(
   config: StrategyConfig,
   candlesFor: (symbol: string) => Candle[] | null | undefined,
   seed: number,
+  opts?: {
+    /** Порог t; по умолчанию in-sample. Для OOT-окна — OOT_T_MIN. */
+    minT?: number;
+    /** Базлайн не входит раньше этого времени (граница OOT-окна). */
+    minEntryTime?: number;
+  },
 ): ScheduledNullResult {
+  const minT = opts?.minT ?? POOLED_T_MIN;
+  const minEntryTime = opts?.minEntryTime ?? 0;
   const allTrades = [...tradesBySymbol.values()].flat();
   const profile = scheduleProfile(allTrades.map((t) => t.entryTime));
   const candidateDaily = dailyNetSeries(allTrades);
@@ -162,7 +187,13 @@ export function scheduledNullGate(
       const candles = candlesFor(symbol);
       if (!candles || candles.length < FIRST_ELIGIBLE + 2) continue;
       const rand = mulberry32((seed ^ fnv1a(symbol)) + run * 7919);
-      const entries = sampleScheduledEntries(candles, symTrades.length, profile, rand);
+      const entries = sampleScheduledEntries(
+        candles,
+        symTrades.length,
+        profile,
+        rand,
+        minEntryTime,
+      );
       if (entries.length === 0) continue;
       for (const [day, r] of dailyNetSeries(simulateExits(candles, config, symbol, entries))) {
         nullDailySum.set(day, (nullDailySum.get(day) ?? 0) + r);
@@ -185,15 +216,15 @@ export function scheduledNullGate(
   const t = m.stdDev > 0 ? (m.mean * Math.sqrt(diffs.length)) / m.stdDev : 0;
   const pValue = 1 - normCdfLocal(t);
   return {
-    pass: t >= POOLED_T_MIN,
+    pass: t >= minT,
     t,
     days: diffs.length,
     meanDiff: m.mean,
     pValue,
     reason:
-      t >= POOLED_T_MIN
+      t >= minT
         ? undefined
-        : `нуль-модель: t=${t.toFixed(2)} < ${POOLED_T_MIN} над базлайном с тем же расписанием`,
+        : `нуль-модель: t=${t.toFixed(2)} < ${minT} над базлайном с тем же расписанием`,
   };
 }
 

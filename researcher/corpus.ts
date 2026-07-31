@@ -71,16 +71,91 @@ export function halvingSubset(symbols: readonly string[], n: number, salt: numbe
 }
 
 /**
+ * ГРАНИЦА OUT-OF-TIME. Всё, что раньше этой даты, — материал поиска; всё, что
+ * позже, кандидат видит РОВНО ОДИН РАЗ, последними воротами, и этот патрон
+ * тратится навсегда.
+ *
+ * Зачем: символьный holdout (каждый пятый символ) оказался слабым OOS — за
+ * всю жизнь журнала он убил 8 кандидатов из 1103 (0.7%). Причина понятна:
+ * разбиение по символам не защищает от подгонки под ЭПОХУ рынка, а крипта
+ * ходит одним стадом. Настоящая защита — разбиение по времени.
+ *
+ * Дата фиксированная, а не скользящая: скользящая граница означала бы, что
+ * вчерашний out-of-time завтра становится материалом поиска, и «потрачен
+ * один раз» перестаёт быть правдой. Сдвигать её можно только сознательно,
+ * с новой пре-регистрацией и новой эпохой журнала.
+ */
+export const OOT_CUTOFF_ISO = "2025-08-01T00:00:00Z";
+export const OOT_CUTOFF_SEC = Math.floor(Date.parse(OOT_CUTOFF_ISO) / 1000);
+
+/**
+ * Прогрев перед первым баром OOT-окна: индикаторам нужна предыстория
+ * (SMA200 + окно волатильности), иначе первые ~300 баров окна не дают
+ * сигналов вообще. Бары прогрева ЛЕЖАТ ДО границы и участвуют только как
+ * контекст: сделки, открытые раньше границы, отбрасываются вызывающим.
+ */
+export const OOT_WARMUP_BARS = 600;
+
+export type CorpusWindow = "in" | "oot" | "all";
+
+/**
  * Мемо-кэш распакованных свечей. Гаунтлет v3 (нуль-модель по всем символам
  * кандидата) и плато перечитывают одни и те же файлы десятки раз за ночь;
  * gunzip+parse на файл — сотни мс. Вся вселенная одного ТФ ≈ 0.7 ГБ — на
  * раннере помещается, но между вселенными кэш чистится (см. clearCandleCache
  * в runScreen), чтобы 1h и 4h не жили в памяти одновременно.
+ *
+ * Срезы окон кэшируются отдельно и НЕ пересоздаются: кэш индикаторных серий
+ * движка привязан к идентичности массива свечей (WeakMap), поэтому свежий
+ * slice на каждый вызов означал бы пересчёт всех индикаторов.
  */
 const candleCache = new Map<string, Candle[] | null>();
+const windowCache = new Map<string, Candle[] | null>();
 
 export function clearCandleCache(): void {
   candleCache.clear();
+  windowCache.clear();
+}
+
+/** Индекс первого бара с временем ≥ cutoff (бинарный поиск). */
+function firstIndexAtOrAfter(candles: readonly Candle[], timeSec: number): number {
+  let lo = 0;
+  let hi = candles.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (candles[mid].time < timeSec) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Свечи символа в заданном окне:
+ * - `in`  — строго до границы OOT (материал поиска и всех стадий);
+ * - `oot` — граница и позже, ПЛЮС OOT_WARMUP_BARS баров контекста перед ней
+ *   (сделки до границы обязан отфильтровать вызывающий по entryTime);
+ * - `all` — вся история (инкубатор, надзор — там время идёт вперёд само).
+ */
+export function loadCandlesWindow(
+  symbol: string,
+  tf: SignalTf,
+  window: CorpusWindow,
+  historyDir = HISTORY_DIR,
+): Candle[] | null {
+  if (window === "all") return loadCandles(symbol, tf, historyDir);
+  const key = `${historyDir}|${symbol}|${tf}|${window}`;
+  const cached = windowCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const full = loadCandles(symbol, tf, historyDir);
+  let sliced: Candle[] | null = null;
+  if (full) {
+    const cut = firstIndexAtOrAfter(full, OOT_CUTOFF_SEC);
+    sliced =
+      window === "in" ? full.slice(0, cut) : full.slice(Math.max(0, cut - OOT_WARMUP_BARS));
+  }
+  windowCache.set(key, sliced);
+  return sliced;
 }
 
 export function loadCandles(

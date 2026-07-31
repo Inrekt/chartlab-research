@@ -114,7 +114,7 @@ ${screens.map(funnelBlock).join("\n\n")}
 
 ## Инкубатор и надзор
 
-- Посеяно в инкубатор: ${incubation.seeded} (отклонено входным порогом 0.20R: ${incubation.rejectedAtEntry})
+- Посеяно в инкубатор: ${incubation.seeded} (отклонено входным порогом δ≥0.18: ${incubation.rejectedAtEntry})
 - Живых проверок: ${incubation.checked}, новых форвард-сделок: ${incubation.newTrades + supervision.newTrades}
 - **Выпущено: ${incubation.graduated.length}**${incubation.graduated.length > 0 ? ` → карточки в папке «Карточки»` : ""}
 - Убито инкубатором: ${incubation.killed.length}
