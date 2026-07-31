@@ -201,6 +201,12 @@ export interface SetupDef {
    * подгонка, от которой защищает пре-регистрация малого пространства.
    */
   fixedRule?: boolean;
+  /**
+   * Собственный пул выходов. Нужен там, где полная сетка из 27 комбинаций
+   * дала бы правилу слишком много свободы: эффект расписания легко
+   * «подтвердить» подбором тейка, если тейков много.
+   */
+  exits?: readonly ExitSpec[];
   build: (dir: Direction) => ConditionAtom[];
 }
 
@@ -494,7 +500,31 @@ const LIQUIDITY_SETUPS: readonly SetupDef[] = LIQ_STRETCH_ATRS.flatMap((stretchA
   ),
 );
 
-export const SETUPS: readonly SetupDef[] = [...BASE_SETUPS, ...LIQUIDITY_SETUPS];
+
+// ── Семейство «часы фандинга» ───────────────────────────────────────────────
+// Пре-регистрация: docs/family-funding-hours-preregistration.md.
+// Расчёт фандинга на Binance идёт в 00/08/16 UTC — это расписание, по
+// которому деньги физически переходят между сторонами. Правило намеренно
+// БЕЗ индикаторов: любой фильтр смешал бы эффект расписания с эффектом
+// фильтра, и нельзя было бы сказать, что именно сработало.
+const FUNDING_HOURS_UTC = [0, 8, 16] as const;
+
+/** Урезанный пул выходов: 27 комбинаций дали бы сезонности слишком много свободы. */
+const FUNDING_EXITS: readonly RrExit[] = [1, 2, 3].flatMap((takeR) =>
+  [10, 20].map((maxBars) => ({ stopAtr: 2, takeR, maxBars })),
+);
+
+const FUNDING_SETUPS: readonly SetupDef[] = FUNDING_HOURS_UTC.map((hour) => ({
+  id: `funding_hour_${String(hour).padStart(2, "0")}`,
+  family: "funding_hours",
+  // Приор низкий: ожидание слабое, и эффект скорее всего съеден издержками.
+  prior: 0.5,
+  fixedRule: true,
+  exits: FUNDING_EXITS,
+  build: (): ConditionAtom[] => [{ kind: "time", hourRangeUtc: [hour, hour + 1] }],
+}));
+
+export const SETUPS: readonly SetupDef[] = [...BASE_SETUPS, ...LIQUIDITY_SETUPS, ...FUNDING_SETUPS];
 
 /**
  * Соседи сетапа по СЕТКЕ ПАРАМЕТРОВ семейства — ±1 шаг по одному измерению.
@@ -527,7 +557,9 @@ export function setupNeighbors(setupId: string): string[] {
 
 /** Выходы, допустимые для сетапа: у семейства — свои, уровневые. */
 export function exitsFor(setupId: string): readonly ExitSpec[] {
-  return LIQ_PARAMS.has(setupId) ? LIQUIDITY_EXITS : EXITS;
+  if (LIQ_PARAMS.has(setupId)) return LIQUIDITY_EXITS;
+  const own = SETUPS.find((s) => s.id === setupId)?.exits;
+  return own ?? EXITS;
 }
 
 const SETUPS_BY_ID = new Map(SETUPS.map((s) => [s.id, s]));

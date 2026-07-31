@@ -91,3 +91,36 @@ describe("семейство ликвидити-магнит", () => {
     expect(setupNeighbors("нет такого")).toEqual([]);
   });
 });
+
+describe("семейство часов фандинга", () => {
+  test("размер ровно как в пре-регистрации: 72 (3 окна × 2 напр. × 6 выходов × 2 ТФ)", () => {
+    const specs = [...enumerateAll()].filter((s) => setupFamily(s.setup) === "funding_hours");
+    const tfs = new Set(specs.map((s) => s.timeframe));
+    expect((specs.length / tfs.size) * 2).toBe(72);
+  });
+
+  test("правило БЕЗ индикаторов — только час UTC", () => {
+    // Любой фильтр смешал бы эффект расписания с эффектом фильтра, и нельзя
+    // было бы сказать, что именно сработало.
+    for (const spec of [...enumerateAll()].filter((s) => setupFamily(s.setup) === "funding_hours")) {
+      expect(spec.filters).toHaveLength(0);
+      const config = toStrategyConfig(spec);
+      expect(config.filters).toBeUndefined();
+      expect(config.entry.conditions).toHaveLength(1);
+      const atom = config.entry.conditions[0] as { kind: string; hourRangeUtc: [number, number] };
+      expect(atom.kind).toBe("time");
+      expect([0, 8, 16]).toContain(atom.hourRangeUtc[0]);
+      expect(atom.hourRangeUtc[1] - atom.hourRangeUtc[0]).toBe(1);
+    }
+  });
+
+  test("пул выходов урезан: стоп фиксирован, тейков три, потолков два", () => {
+    const specs = [...enumerateAll()].filter((s) => setupFamily(s.setup) === "funding_hours");
+    const stops = new Set(specs.map((s) => (s.exit as { stopAtr: number }).stopAtr));
+    const takes = new Set(specs.map((s) => (s.exit as { takeR: number }).takeR));
+    const bars = new Set(specs.map((s) => s.exit.maxBars));
+    expect([...stops]).toEqual([2]); // единственный стоп — свободы подбора нет
+    expect([...takes].sort()).toEqual([1, 2, 3]);
+    expect([...bars].sort()).toEqual([10, 20]);
+  });
+});

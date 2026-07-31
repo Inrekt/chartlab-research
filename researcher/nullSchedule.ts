@@ -181,11 +181,13 @@ export function scheduledNullGate(
 
   // средний дневной ряд базлайна: сумма по прогонам / K
   const nullDailySum = new Map<number, number>();
-  for (let run = 0; run < SCHED_NULL_RUNS; run++) {
-    for (const [symbol, symTrades] of tradesBySymbol) {
-      if (symTrades.length === 0) continue;
-      const candles = candlesFor(symbol);
-      if (!candles || candles.length < FIRST_ELIGIBLE + 2) continue;
+  // Символ-мажорно: свечи одного символа читаются один раз на все K прогонов
+  // базлайна. Обратный порядок заставлял бы держать в памяти весь корпус.
+  for (const [symbol, symTrades] of tradesBySymbol) {
+    if (symTrades.length === 0) continue;
+    const candles = candlesFor(symbol);
+    if (!candles || candles.length < FIRST_ELIGIBLE + 2) continue;
+    for (let run = 0; run < SCHED_NULL_RUNS; run++) {
       const rand = mulberry32((seed ^ fnv1a(symbol)) + run * 7919);
       const entries = sampleScheduledEntries(
         candles,

@@ -109,8 +109,27 @@ export type CorpusWindow = "in" | "oot" | "all";
  * движка привязан к идентичности массива свечей (WeakMap), поэтому свежий
  * slice на каждый вызов означал бы пересчёт всех индикаторов.
  */
+/**
+ * Кэш ОГРАНИЧЕН: держать весь корпус 1h (170 символов × 44к баров) вместе с
+ * индикаторными рядами на каждый массив — верный путь в out-of-memory,
+ * пойманный на гаунтлете 31.07. Обходы устроены символ-мажорно, поэтому
+ * повторное использование живёт внутри одного символа, и маленького окна
+ * достаточно; вытеснение освобождает и привязанные к массиву кэши серий
+ * (они на WeakMap).
+ */
+const CACHE_SYMBOLS = 3;
 const candleCache = new Map<string, Candle[] | null>();
 const windowCache = new Map<string, Candle[] | null>();
+
+function remember<T>(cache: Map<string, T>, key: string, value: T, limit: number): T {
+  cache.set(key, value);
+  while (cache.size > limit) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+  return value;
+}
 
 export function clearCandleCache(): void {
   candleCache.clear();
@@ -154,8 +173,8 @@ export function loadCandlesWindow(
     sliced =
       window === "in" ? full.slice(0, cut) : full.slice(Math.max(0, cut - OOT_WARMUP_BARS));
   }
-  windowCache.set(key, sliced);
-  return sliced;
+  // Окон два на символ ("in" и "oot"), поэтому лимит вдвое больше.
+  return remember(windowCache, key, sliced, CACHE_SYMBOLS * 2);
 }
 
 export function loadCandles(
@@ -170,6 +189,5 @@ export function loadCandles(
   const candles = existsSync(path)
     ? (JSON.parse(gunzipSync(readFileSync(path)).toString("utf-8")) as Candle[])
     : null;
-  candleCache.set(key, candles);
-  return candles;
+  return remember(candleCache, key, candles, CACHE_SYMBOLS);
 }
