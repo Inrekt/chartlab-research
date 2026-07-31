@@ -136,14 +136,25 @@ export async function runIncubation(opts: {
       continue;
     }
     const netExpectancy = Number(seed.metrics.netExpectancy);
-    // NaN-щит: NaN < порога = false, и кандидат с битым посевом уезжал бы в
-    // инкубацию с mu1=NaN и вечным «continue» до смерти по календарю.
-    if (!Number.isFinite(netExpectancy)) {
-      ledger.transition(trial.candidateId, "REJECTED", "входной порог инкубатора: netExpectancy не число");
+    const seedSigma = Number(seed.metrics.sigma);
+    /**
+     * NaN-щит на ОБА числа посева. Любое сравнение с NaN ложно, поэтому
+     * порог пропускал такого кандидата; дальше book.start() падал на
+     * NOT NULL, INSERT OR IGNORE глотал ошибку, а переход в INCUBATING всё
+     * равно происходил. Получался бессмертный призрак: на каждом часовом
+     * тике `if (!inc) continue` срабатывал ДО проверок усечения, так что его
+     * не мог убить даже календарь (найдено тестами спящих веток 31.07).
+     */
+    if (!Number.isFinite(netExpectancy) || !Number.isFinite(seedSigma)) {
+      ledger.transition(
+        trial.candidateId,
+        "REJECTED",
+        `входной порог инкубатора: посев испорчен (netExpectancy=${seed.metrics.netExpectancy}, sigma=${seed.metrics.sigma})`,
+      );
       summary.rejectedAtEntry += 1;
       continue;
     }
-    const sigma = Math.max(Number(seed.metrics.sigma), SIGMA_FLOOR);
+    const sigma = Math.max(seedSigma, SIGMA_FLOOR);
     const mu1 = netExpectancy / 2; // скептичная половина Бентера
     /**
      * v3: порог входа в δ = μ₁/σ, а не в абсолютных R. Старая пара
@@ -172,7 +183,10 @@ export async function runIncubation(opts: {
       .filter((t) => t.toState === "VALIDATED")
       .at(-1)?.createdAt;
     const frozenAt = Math.floor(Date.parse(validatedAt ?? trial.updatedAt) / 1000);
-    book.start({
+    // Переход только если книга ДЕЙСТВИТЕЛЬНО завела строку: иначе кандидат
+    // окажется в INCUBATING без записи, а такой на каждом тике отсеивается
+    // строкой `if (!inc) continue` раньше любых проверок усечения.
+    const started = book.start({
       candidateId: trial.candidateId,
       tf: String(seed.metrics.tf) as SignalTf,
       symbols: String(seed.metrics.symbols).split(","),
@@ -181,6 +195,10 @@ export async function runIncubation(opts: {
       expectedN,
       frozenAt,
     });
+    if (!started) {
+      log(`  ${trial.candidateId}: книга инкубации не приняла посев — остаётся VALIDATED, повторим`);
+      continue;
+    }
     ledger.transition(
       trial.candidateId,
       "INCUBATING",

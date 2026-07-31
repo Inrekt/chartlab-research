@@ -1,11 +1,11 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "vitest";
 import type { TradeResult } from "../src/core/types/index.ts";
-import { buildCard, cardFileName, quarterKellyPct, writeCard } from "./cards.ts";
+import { appendCardEvent, buildCard, cardFileName, quarterKellyPct, writeCard } from "./cards.ts";
 import { cusumLower } from "./cusum.ts";
-import { IncubationBook, type IncubationRow } from "./incubationBook.ts";
+import { IncubationBook, type IncubationRow, type PaperTradeRow } from "./incubationBook.ts";
 import { TrialLedger } from "./ledger.ts";
 import { sampleCandidates } from "./grammar.ts";
 import { runSupervision } from "./supervise.ts";
@@ -46,6 +46,17 @@ const paperTrade = (entryTime: number, rMultiple: number): TradeResult => ({
   barsHeld: 2,
 });
 
+/** Сделка движка → строка книги: карточка читает именно её форму. */
+const paperRow = (t: TradeResult): PaperTradeRow => ({
+  symbol: t.symbol,
+  direction: t.direction,
+  entryTime: t.entryTime,
+  entryPrice: t.entryPrice,
+  stopPrice: t.stopPrice,
+  rMultiple: t.rMultiple,
+  exitTime: t.exitTime,
+});
+
 describe("strategy card", () => {
   const spec = sampleCandidates(5, 1)[0];
   const inc: IncubationRow = {
@@ -60,15 +71,7 @@ describe("strategy card", () => {
   };
   const trades = Array.from({ length: 45 }, (_, i) =>
     paperTrade(T0 + i * 24 * HOUR, i % 3 === 0 ? -1 : 1.4),
-  ).map((t) => ({
-    symbol: t.symbol,
-    direction: t.direction,
-    entryTime: t.entryTime,
-    entryPrice: t.entryPrice,
-    stopPrice: t.stopPrice,
-    rMultiple: t.rMultiple,
-    exitTime: t.exitTime,
-  }));
+  ).map(paperRow);
 
   test("card carries rules in words, forward evidence, risk block and kill switch", () => {
     const card = buildCard({
@@ -100,6 +103,44 @@ describe("strategy card", () => {
     const path = writeCard(dir, "a|b+c|s2t2b20", "# test");
     expect(path).toBe(join(dir, cardFileName("a|b+c|s2t2b20")));
     expect(readFileSync(path, "utf-8")).toBe("# test");
+  });
+});
+
+/**
+ * Журнал карточки. До сих пор ни один тест не создавал каталог карточек, из-за
+ * чего КАЖДЫЙ appendCardEvent уходил в пустой catch: покрытие было ложным.
+ */
+describe("card event log", () => {
+  const ID = "cand|x+y|s2t2b20";
+
+  test("appendCardEvent really appends to an existing card file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "card-events-"));
+    writeCard(dir, ID, "# карточка\n\n## Журнал событий\n\n- 2026-01-01 — выпуск (GRADUATED)\n");
+    appendCardEvent(dir, ID, "2026-02-01 — ⚠️ DECAYING: тревога CUSUM");
+    appendCardEvent(dir, ID, "2026-03-01 — 🪦 RETIRED: край умер");
+    const lines = readFileSync(join(dir, cardFileName(ID)), "utf-8").trimEnd().split("\n");
+    // append-only по духу: старые строки на месте, новые в хвосте и по порядку
+    expect(lines).toContain("- 2026-01-01 — выпуск (GRADUATED)");
+    expect(lines.at(-2)).toBe("- 2026-02-01 — ⚠️ DECAYING: тревога CUSUM");
+    expect(lines.at(-1)).toBe("- 2026-03-01 — 🪦 RETIRED: край умер");
+  });
+
+  test("missing cards directory is swallowed — supervision never dies over a file", () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "card-events-")), "нет-такого-каталога");
+    expect(() => appendCardEvent(dir, ID, "2026-02-01 — событие")).not.toThrow();
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  test("directory without a card: the event creates an orphan file (current behaviour)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "card-events-"));
+    appendCardEvent(dir, ID, "2026-02-01 — событие без карточки");
+    // СПОРНО: комментарий в cards.ts обещает «карточки нет — событие живёт в
+    // журнале БД», но флаг 'a' создаёт файл, и catch ловит только отсутствие
+    // каталога. На диске появляется .md без правил и риск-блока. Продкод не
+    // трогаем — тест фиксирует то, как код ведёт себя сейчас.
+    expect(readFileSync(join(dir, cardFileName(ID)), "utf-8")).toBe(
+      "- 2026-02-01 — событие без карточки\n",
+    );
   });
 });
 
@@ -136,7 +177,34 @@ describe("supervision lifecycle", () => {
     });
     book.recordTrades(id, incubationTrades);
     book.close();
+    // Карточка выпускника обязана лежать на диске: без неё каждый
+    // appendCardEvent надзора молча проваливается в catch, и «покрытие»
+    // событий карточки оказывается покрытием пустоты.
+    writeCard(
+      cardsDir,
+      id,
+      buildCard({
+        candidateId: id,
+        spec,
+        incubation: {
+          candidateId: id,
+          tf: "1h",
+          symbols: ["TESTUSDT"],
+          mu1: 0.15,
+          sigma: 1,
+          expectedN: 80,
+          frozenAt: T0,
+          startedAt: new Date(T0 * 1000).toISOString(),
+        },
+        trades: incubationTrades.map(paperRow),
+        graduationReason: "SPRT принял H1 (тест)",
+        clusterKey: "test-cluster",
+        graduatedAt: new Date(gradAtSec * 1000).toISOString(),
+      }),
+    );
   };
+
+  const cardText = () => readFileSync(join(cardsDir, cardFileName(id)), "utf-8");
 
   beforeEach(() => {
     const dir = mkdtempSync(join(tmpdir(), "supervise-"));
@@ -170,6 +238,9 @@ describe("supervision lifecycle", () => {
     const ledger = new TrialLedger(dbPath);
     expect(ledger.getTrial(id)!.state).toBe("GRADUATED");
     ledger.close();
+    // здоровье — это отсутствие записей: журнал карточки не трогали
+    expect(cardText()).not.toContain("⚠️");
+    expect(cardText()).not.toContain("🪦");
   });
 
   test("degraded graduate → DECAYING, then dead stream → RETIRED", async () => {
@@ -204,6 +275,14 @@ describe("supervision lifecycle", () => {
     const ledger = new TrialLedger(dbPath);
     expect(ledger.getTrial(id)!.state).toBe("RETIRED");
     ledger.close();
+    // оба вердикта дописаны в журнал СУЩЕСТВУЮЩЕЙ карточки, с датой прогона
+    const card = cardText();
+    expect(card).toContain("⚠️ DECAYING: CUSUM-тревога");
+    expect(card).toContain("Торговлю по карточке остановить.");
+    expect(card).toContain("🪦 RETIRED: край не восстановился (SPRT)");
+    expect(card).toContain(
+      `- ${new Date((gradAt + 60 * 86_400) * 1000).toISOString().slice(0, 10)} — 🪦`,
+    );
   });
 
   test("recovered decayer gets its single requalification", async () => {
@@ -230,6 +309,95 @@ describe("supervision lifecycle", () => {
     expect(second.requalified).toEqual([id]);
     const ledger = new TrialLedger(dbPath);
     expect(ledger.getTrial(id)!.state).toBe("GRADUATED");
+    ledger.close();
+    expect(cardText()).toContain("✅ реквалификация: SPRT заново доказал край");
+  });
+
+  /**
+   * Ветка, которой в проде не было ни разу: вторая реквалификация. SPRT снова
+   * «за», но лимит «одна за жизнь» исчерпан — ledger.transition бросает, а
+   * supervise ловит исключение ПО ПОДСТРОКЕ русского текста «уже использована»
+   * и превращает отказ в пенсию. Никакой типизированной связи между файлами
+   * нет, поэтому здесь она проверяется сквозным прогоном.
+   */
+  test("second requalification is refused and turns into RETIRED", async () => {
+    const gradAt = T0 + 40 * 86_400;
+    setupGraduate(gradAt, incubationSet(gradAt));
+    const opts = { dbPath, source: async () => [], vaultCardsDir: cardsDir };
+    const add = (from12h: number, count: number, rMultiple: number) => {
+      const book = new IncubationBook(dbPath);
+      book.recordTrades(
+        id,
+        Array.from({ length: count }, (_, i) => paperTrade(T0 + (from12h + i) * 12 * HOUR, rMultiple)),
+      );
+      book.close();
+    };
+
+    // 1. первая деградация (gradAt = T0+80·12ч, сплошные стопы после выпуска)
+    add(81, 15, -1);
+    const first = await runSupervision({ ...opts, nowSec: () => gradAt + 20 * 86_400 });
+    expect(first.decayed).toEqual([id]);
+
+    // 2. единственная за жизнь реквалификация
+    add(125, 30, 1.5);
+    const second = await runSupervision({ ...opts, nowSec: () => gradAt + 50 * 86_400 });
+    expect(second.requalified).toEqual([id]);
+
+    // 3. вторая деградация — CUSUM считает от НОВОГО выпуска, эталон прежний
+    add(182, 15, -1);
+    const third = await runSupervision({ ...opts, nowSec: () => gradAt + 65 * 86_400 });
+    expect(third.decayed).toEqual([id]);
+
+    // 4. SPRT снова принял H1, но билет уже потрачен → пенсия, а не выпуск
+    add(214, 30, 1.5);
+    const fourth = await runSupervision({ ...opts, nowSec: () => gradAt + 90 * 86_400 });
+    expect(fourth.requalified).toEqual([]);
+    expect(fourth.retired).toEqual([id]);
+
+    const ledger = new TrialLedger(dbPath);
+    expect(ledger.getTrial(id)!.state).toBe("RETIRED");
+    const history = ledger.transitionsFor(id);
+    expect(
+      history.filter((t) => t.fromState === "DECAYING" && t.toState === "GRADUATED").length,
+    ).toBe(1);
+    expect(history.at(-1)).toMatchObject({
+      fromState: "DECAYING",
+      toState: "RETIRED",
+      reason: "вторая деградация после единственной реквалификации",
+    });
+    // решение принято по SPRT-«за», а не по молчанию: журнал это фиксирует
+    expect(ledger.evalsFor(id, "requalification_check").at(-1)!.metrics.decision).toBe("accept");
+    ledger.close();
+
+    const card = cardText();
+    expect(card).toContain("✅ реквалификация");
+    expect(card).toContain("🪦 RETIRED: вторая деградация — карточка закрыта навсегда");
+  });
+});
+
+/**
+ * Пин на текстовый контракт между ledger.ts и supervise.ts: пенсия за вторую
+ * реквалификацию наступает только потому, что supervise ищет в сообщении об
+ * ошибке подстроку «уже использована». Переименование текста в ledger.ts не
+ * ломает ни типы, ни компиляцию — оно превращает штатный переход в пенсию в
+ * НЕПЕРЕХВАЧЕННОЕ исключение посреди ночного прогона (см. supervise.ts:150).
+ */
+describe("ledger ↔ supervise text contract", () => {
+  test("the second DECAYING→GRADUATED throws with the substring supervise catches", () => {
+    const ledger = new TrialLedger(":memory:");
+    const spec = sampleCandidates(5, 1)[0];
+    ledger.registerCandidates([spec]);
+    const candidate = [...ledger.allCandidateIds()][0];
+    for (const to of ["SCREENED", "VALIDATED", "INCUBATING", "GRADUATED", "DECAYING", "GRADUATED", "DECAYING"] as const) {
+      ledger.transition(candidate, to, "тест");
+    }
+    let message = "";
+    try {
+      ledger.transition(candidate, "GRADUATED", "вторая реквалификация");
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message.includes("уже использована")).toBe(true);
     ledger.close();
   });
 });

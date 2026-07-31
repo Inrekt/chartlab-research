@@ -198,6 +198,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   log(`Стадия 1/3: ${specs.length} кандидатов × ${stageASymbols.length} символов…`);
   const tradesA = runStage(specs, stageASymbols, opts.tf);
   const stageASharpes: number[] = [];
+  const stageATradeCounts: number[] = [];
   const survivorsA: CandidateSpec[] = [];
   for (const spec of specs) {
     const id = candidateId(spec);
@@ -209,6 +210,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     // через неё планку E[max] ВСЕМ финалистам (√varSR 0.079 вместо ~0.03).
     if (trades.length >= STAGE_A_MIN_TRADES && netRs.length >= 5) {
       stageASharpes.push(tradeSharpe(netRs));
+      stageATradeCounts.push(netRs.length);
     }
     ledger.recordEval(id, "halving_16", {
       trades: trades.length,
@@ -228,6 +230,23 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   }
   // Дисперсия Шарпа ПО ВСЕЙ партии, включая проигравших, — вход планки E[max].
   const batchSharpeVariance = moments(stageASharpes).stdDev ** 2;
+  /**
+   * ЗАМЕР, на вердикт не влияет. Наблюдаемый разброс Шарпов = разброс
+   * ИСТИННЫЙ + шум оценивания, причём Var[ŝ] ≈ (1+ŝ²/2)/T. Кандидаты
+   * стадии-16 имеют 8–40 сделок, поэтому второе слагаемое велико, и планка
+   * дефляции сейчас зависит от того, сколько сделок случайно набрали
+   * ПРОИГРАВШИЕ, — артефакт конвейера, а не свойство пространства стратегий.
+   * Пишем обе величины в журнал: переход на очищенную оценку — отдельная
+   * пре-регистрация, и делать её надо по наблюдениям боевых ночей.
+   */
+  const meanEstimationVar =
+    stageASharpes.length > 0
+      ? stageASharpes.reduce(
+          (sum, sr, i) => sum + (1 + (sr * sr) / 2) / Math.max(stageATradeCounts[i], 2),
+          0,
+        ) / stageASharpes.length
+      : 0;
+  const debiasedBatchVariance = Math.max(0, batchSharpeVariance - meanEstimationVar);
   log(`  прошло ${survivorsA.length}/${specs.length}.`);
 
   // Диагностика ПРОЦЕССА на всей партии (с проигравшими): RC Уайта — «нашла
@@ -396,7 +415,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   for (const f of finalists) {
     if (!applyGate("gate_temporal", f, gateTemporal(f.trades))) continue;
     const netRs = netRMultiples(f.trades);
-    const dsrGate = gateDsr(netRs, nEffective, batchSharpeVariance);
+    const dsrGate = gateDsr(netRs, nEffective, batchSharpeVariance, debiasedBatchVariance);
     if (!applyGate("gate_dsr", f, dsrGate)) continue;
     const wilsonGate = gateWilson(statsAfterCosts(f.trades), f.spec.exit.takeR);
     if (!applyGate("gate_wilson", f, wilsonGate)) continue;

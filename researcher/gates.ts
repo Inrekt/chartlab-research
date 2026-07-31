@@ -210,6 +210,16 @@ export function gateDsr(
   netRMultiples: readonly number[],
   nEffective: number,
   batchSharpeVariance: number,
+  /**
+   * ТОЛЬКО ДЛЯ ЗАМЕРА, на вердикт не влияет. Дисперсия Шарпов партии,
+   * очищенная от шума оценивания: Var(наблюдаемая) = Var(истинная) +
+   * E[Var оценки], а Var[ŝ] ≈ (1+ŝ²/2)/T. Сырая величина завышена тем
+   * сильнее, чем меньше сделок было у кандидатов стадии-16, то есть планка
+   * дефляции сейчас зависит от артефакта конвейера, а не от свойств
+   * пространства стратегий. Пишем оба числа в журнал, чтобы решение о
+   * переходе принималось по НАБЛЮДЕНИЯМ боевых ночей, а не по рассуждению.
+   */
+  debiasedBatchVariance?: number,
 ): GateResult {
   const T = netRMultiples.length;
   if (T < 2) return fail("DSR: меньше двух сделок", { T });
@@ -221,12 +231,22 @@ export function gateDsr(
   const varSR = Math.max(batchSharpeVariance, varFloor);
   const sr0 = expectedMaxSharpe(Math.max(nEffective, 1), varSR);
   const dsr = deflatedSharpe(sr, sr0, T, m.skewness, m.kurtosis);
-  const metrics = {
+  const metrics: GateResult["metrics"] = {
     tradeSharpe: Number(sr.toFixed(4)),
     sr0: Number(sr0.toFixed(4)),
     nEffective,
     dsr: Number(dsr.toFixed(4)),
   };
+  if (debiasedBatchVariance !== undefined) {
+    const varShadow = Math.max(debiasedBatchVariance, varFloor);
+    const sr0Shadow = expectedMaxSharpe(Math.max(nEffective, 1), varShadow);
+    metrics.varSR = Number(varSR.toFixed(6));
+    metrics.varSRdebiased = Number(varShadow.toFixed(6));
+    metrics.sr0debiased = Number(sr0Shadow.toFixed(4));
+    metrics.dsrDebiased = Number(
+      deflatedSharpe(sr, sr0Shadow, T, m.skewness, m.kurtosis).toFixed(4),
+    );
+  }
   return dsr >= DSR_MIN
     ? pass(metrics)
     : fail(`DSR: ${dsr.toFixed(3)} < 0.95 при планке E[max]=${sr0.toFixed(3)} (N=${nEffective})`, metrics);
