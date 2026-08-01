@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-01T06:38:15.729Z",
+  "generatedAt": "2026-08-01T09:14:54.475Z",
   "run": {
     "durationMin": 23,
     "nextNightUtc": "2026-08-01T21:37:00.000Z",
-    "lastTickUtc": "2026-08-01T06:38:15.729Z"
+    "lastTickUtc": "2026-08-01T09:14:54.475Z"
   },
   "ledger": {
     "trials": 32370,
