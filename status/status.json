@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-04T21:22:51.111Z",
+  "generatedAt": "2026-08-04T23:02:43.756Z",
   "run": {
-    "durationMin": 20,
-    "nextNightUtc": "2026-08-04T21:37:00.000Z",
-    "lastTickUtc": "2026-08-04T21:22:51.111Z"
+    "durationMin": 22,
+    "nextNightUtc": "2026-08-05T21:37:00.000Z",
+    "lastTickUtc": "2026-08-04T23:02:43.756Z"
   },
   "ledger": {
-    "trials": 44370,
-    "clusters": 8495,
+    "trials": 48370,
+    "clusters": 8778,
     "census": {
-      "REJECTED": 44370
+      "REJECTED": 48370
     }
   },
   "universes": [
@@ -28,11 +28,11 @@
         },
         {
           "stage": "halving_16",
-          "n": 172
+          "n": 165
         },
         {
           "stage": "halving_128",
-          "n": 81
+          "n": 49
         },
         {
           "stage": "gauntlet",
@@ -40,17 +40,17 @@
         }
       ],
       "rejectedByGate": {
-        "halving_16": 1828,
-        "halving_128": 91,
-        "gate_breadth": 62,
-        "gate_cost_stress": 12,
-        "gate_plateau": 1,
+        "halving_16": 1835,
+        "halving_128": 116,
+        "gate_breadth": 29,
+        "gate_cost_stress": 14,
+        "gate_activity": 1,
         "gate_null": 1,
-        "gate_temporal": 3,
-        "gate_dsr": 2
+        "gate_dsr": 2,
+        "gate_temporal": 2
       },
-      "realityCheckP": 0.562,
-      "pbo": 0.1893939393939394
+      "realityCheckP": 0.946,
+      "pbo": 0.27056277056277056
     },
     {
       "tf": "4h",
@@ -66,11 +66,11 @@
         },
         {
           "stage": "halving_16",
-          "n": 1002
+          "n": 860
         },
         {
           "stage": "halving_128",
-          "n": 828
+          "n": 699
         },
         {
           "stage": "gauntlet",
@@ -78,265 +78,271 @@
         }
       ],
       "rejectedByGate": {
-        "halving_16": 998,
-        "halving_128": 174,
-        "gate_breadth": 396,
-        "gate_cost_stress": 42,
-        "gate_activity": 31,
-        "gate_plateau": 30,
-        "gate_null": 220,
-        "gate_dsr": 79,
-        "gate_temporal": 30
+        "halving_16": 1140,
+        "halving_128": 161,
+        "gate_breadth": 328,
+        "gate_cost_stress": 25,
+        "gate_activity": 29,
+        "gate_plateau": 35,
+        "gate_null": 187,
+        "gate_temporal": 29,
+        "gate_dsr": 66
       },
-      "realityCheckP": 0.42,
-      "pbo": 0.341991341991342
+      "realityCheckP": 0.202,
+      "pbo": 0.24783549783549783
     }
   ],
   "incubating": [],
   "graduates": [],
   "recentJournal": [
     {
-      "at": "2026-08-03T22:57:01.855Z",
+      "at": "2026-08-04T23:02:43.556Z",
       "state": "REJECTED",
       "ref": "пробой · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
     },
     {
-      "at": "2026-08-03T22:57:01.851Z",
+      "at": "2026-08-04T23:02:43.552Z",
       "state": "REJECTED",
-      "ref": "импульс · 4h · short",
+      "ref": "пробой · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.550Z",
+      "state": "REJECTED",
+      "ref": "тренд · 4h · short",
       "reason": "время: walk-forward вердикт «unstable»"
     },
     {
-      "at": "2026-08-03T22:57:01.847Z",
-      "state": "REJECTED",
-      "ref": "импульс · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.842Z",
-      "state": "REJECTED",
-      "ref": "пробой · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.838Z",
-      "state": "REJECTED",
-      "ref": "пробой · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.833Z",
+      "at": "2026-08-04T23:02:43.547Z",
       "state": "REJECTED",
       "ref": "импульс · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
     },
     {
-      "at": "2026-08-03T22:57:01.830Z",
-      "state": "REJECTED",
-      "ref": "сезонность · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.826Z",
-      "state": "REJECTED",
-      "ref": "тренд · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.819Z",
-      "state": "REJECTED",
-      "ref": "импульс · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.794Z",
+      "at": "2026-08-04T23:02:43.542Z",
       "state": "REJECTED",
       "ref": "сезонность · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.771Z",
-      "state": "REJECTED",
-      "ref": "тренд · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.767Z",
-      "state": "REJECTED",
-      "ref": "импульс · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.763Z",
-      "state": "REJECTED",
-      "ref": "импульс · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.759Z",
-      "state": "REJECTED",
-      "ref": "сезонность · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.743Z",
-      "state": "REJECTED",
-      "ref": "тренд · 4h · short",
       "reason": "время: walk-forward вердикт «unstable»"
     },
     {
-      "at": "2026-08-03T22:57:01.738Z",
+      "at": "2026-08-04T23:02:43.539Z",
+      "state": "REJECTED",
+      "ref": "тренд · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.535Z",
       "state": "REJECTED",
       "ref": "импульс · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
     },
     {
-      "at": "2026-08-03T22:57:01.699Z",
+      "at": "2026-08-04T23:02:43.530Z",
       "state": "REJECTED",
       "ref": "пробой · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
     },
     {
-      "at": "2026-08-03T22:57:01.694Z",
+      "at": "2026-08-04T23:02:43.526Z",
       "state": "REJECTED",
-      "ref": "дивергенция · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.689Z",
-      "state": "REJECTED",
-      "ref": "импульс · 4h · short",
-      "reason": "время: walk-forward вердикт «unstable»"
-    },
-    {
-      "at": "2026-08-03T22:57:01.682Z",
-      "state": "REJECTED",
-      "ref": "пробой · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.678Z",
-      "state": "REJECTED",
-      "ref": "пробой · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.675Z",
-      "state": "REJECTED",
-      "ref": "тренд · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.670Z",
-      "state": "REJECTED",
-      "ref": "пробой · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.665Z",
-      "state": "REJECTED",
-      "ref": "пробой · 4h · short",
-      "reason": "время: walk-forward вердикт «unstable»"
-    },
-    {
-      "at": "2026-08-03T22:57:01.661Z",
-      "state": "REJECTED",
-      "ref": "пробой · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.656Z",
-      "state": "REJECTED",
-      "ref": "импульс · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.653Z",
-      "state": "REJECTED",
-      "ref": "пробой · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.644Z",
-      "state": "REJECTED",
-      "ref": "пробой · 4h · short",
-      "reason": "время: walk-forward вердикт «unstable»"
-    },
-    {
-      "at": "2026-08-03T22:57:01.638Z",
-      "state": "REJECTED",
-      "ref": "дивергенция · 4h · short",
+      "ref": "сезонность · 4h · long",
       "reason": "время: walk-forward вердикт «decaying»"
     },
     {
-      "at": "2026-08-03T22:57:01.636Z",
+      "at": "2026-08-04T23:02:43.520Z",
+      "state": "REJECTED",
+      "ref": "пробой · 4h · short",
+      "reason": "время: walk-forward вердикт «unstable»"
+    },
+    {
+      "at": "2026-08-04T23:02:43.518Z",
+      "state": "REJECTED",
+      "ref": "пробой · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.513Z",
+      "state": "REJECTED",
+      "ref": "тренд · 4h · short",
+      "reason": "время: walk-forward вердикт «unstable»"
+    },
+    {
+      "at": "2026-08-04T23:02:43.510Z",
+      "state": "REJECTED",
+      "ref": "импульс · 4h · long",
+      "reason": "время: walk-forward вердикт «decaying»"
+    },
+    {
+      "at": "2026-08-04T23:02:43.499Z",
       "state": "REJECTED",
       "ref": "паттерн · 4h · short",
-      "reason": "время: walk-forward вердикт «unstable»"
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
     },
     {
-      "at": "2026-08-03T22:57:01.632Z",
+      "at": "2026-08-04T23:02:43.493Z",
       "state": "REJECTED",
       "ref": "пробой · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
     },
     {
-      "at": "2026-08-03T22:57:01.517Z",
+      "at": "2026-08-04T23:02:43.489Z",
       "state": "REJECTED",
-      "ref": "тренд · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
+      "ref": "пробой · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
     },
     {
-      "at": "2026-08-03T22:57:01.464Z",
+      "at": "2026-08-04T23:02:43.484Z",
       "state": "REJECTED",
       "ref": "импульс · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.457Z",
-      "state": "REJECTED",
-      "ref": "сезонность · 4h · long",
       "reason": "время: walk-forward вердикт «decaying»"
     },
     {
-      "at": "2026-08-03T22:57:01.448Z",
-      "state": "REJECTED",
-      "ref": "импульс · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.445Z",
-      "state": "REJECTED",
-      "ref": "импульс · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.439Z",
-      "state": "REJECTED",
-      "ref": "импульс · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.436Z",
-      "state": "REJECTED",
-      "ref": "дивергенция · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.433Z",
-      "state": "REJECTED",
-      "ref": "паттерн · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
-    },
-    {
-      "at": "2026-08-03T22:57:01.426Z",
+      "at": "2026-08-04T23:02:43.477Z",
       "state": "REJECTED",
       "ref": "пробой · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=4.111 (N=8495)"
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.474Z",
+      "state": "REJECTED",
+      "ref": "тренд · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.471Z",
+      "state": "REJECTED",
+      "ref": "пробой · 4h · short",
+      "reason": "время: walk-forward вердикт «unstable»"
+    },
+    {
+      "at": "2026-08-04T23:02:43.468Z",
+      "state": "REJECTED",
+      "ref": "пробой · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.466Z",
+      "state": "REJECTED",
+      "ref": "тренд · 4h · long",
+      "reason": "время: walk-forward вердикт «decaying»"
+    },
+    {
+      "at": "2026-08-04T23:02:43.457Z",
+      "state": "REJECTED",
+      "ref": "пробой · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.455Z",
+      "state": "REJECTED",
+      "ref": "тренд · 4h · long",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.450Z",
+      "state": "REJECTED",
+      "ref": "сезонность · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.446Z",
+      "state": "REJECTED",
+      "ref": "тренд · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.443Z",
+      "state": "REJECTED",
+      "ref": "дивергенция · 4h · short",
+      "reason": "DSR: 0.001 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.442Z",
+      "state": "REJECTED",
+      "ref": "импульс · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.440Z",
+      "state": "REJECTED",
+      "ref": "импульс · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.438Z",
+      "state": "REJECTED",
+      "ref": "импульс · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.434Z",
+      "state": "REJECTED",
+      "ref": "тренд · 4h · long",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.430Z",
+      "state": "REJECTED",
+      "ref": "дивергенция · 4h · long",
+      "reason": "DSR: 0.229 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.429Z",
+      "state": "REJECTED",
+      "ref": "дивергенция · 4h · short",
+      "reason": "время: walk-forward вердикт «unstable»"
+    },
+    {
+      "at": "2026-08-04T23:02:43.428Z",
+      "state": "REJECTED",
+      "ref": "пробой · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.423Z",
+      "state": "REJECTED",
+      "ref": "пробой · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.420Z",
+      "state": "REJECTED",
+      "ref": "пробой · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.416Z",
+      "state": "REJECTED",
+      "ref": "тренд · 4h · long",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.408Z",
+      "state": "REJECTED",
+      "ref": "импульс · 4h · long",
+      "reason": "время: walk-forward вердикт «decaying»"
+    },
+    {
+      "at": "2026-08-04T23:02:43.404Z",
+      "state": "REJECTED",
+      "ref": "импульс · 4h · short",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
+    },
+    {
+      "at": "2026-08-04T23:02:43.401Z",
+      "state": "REJECTED",
+      "ref": "тренд · 4h · long",
+      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.290 (N=8778)"
     }
   ],
   "history": [
+    {
+      "date": "2026-08-04",
+      "batch": 4000,
+      "validated": 0,
+      "graduated": 0
+    },
     {
       "date": "2026-08-03",
       "batch": 4000,
