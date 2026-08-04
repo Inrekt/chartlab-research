@@ -113,7 +113,18 @@ export type ConditionAtom =
    * шорта), "below" — ниже. Считается ПРИЧИННО (clusterSeries.ts): на баре
    * видно только прошлое.
    */
-  | { kind: "liquidity"; side: "above" | "below"; minAtr: number; maxAtr: number; minWeight: number };
+  | { kind: "liquidity"; side: "above" | "below"; minAtr: number; maxAtr: number; minWeight: number }
+  /**
+   * Ставка финансирования перпетуала в верхних/нижних `percentile` процентах
+   * СВОЕЙ недавней истории (окно `windowDays`). Измеряет перегруженность
+   * плеча: экстремальная ставка означает, что одна сторона платит за право
+   * оставаться в позиции. Сравнение относительное, потому что у разных монет
+   * свой масштаб ставки.
+   *
+   * Требует символа в контексте вычисления: без него ряд не построить, и
+   * условие честно возвращает false.
+   */
+  | { kind: "funding"; direction: "above" | "below"; percentile: number; windowDays: number };
 
 export interface ConditionGroup {
   operator: "AND" | "OR";

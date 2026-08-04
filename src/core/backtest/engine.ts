@@ -38,7 +38,8 @@ interface OpenPosition {
 export function runBacktest(candles: Candle[], config: StrategyConfig, symbol: string): TradeResult[] {
   if (candles.length < 2) return [];
 
-  const ctx = new EvaluationContext(candles);
+  // Символ нужен атомам с внешними данными (фандинг) — по свечам его не узнать.
+  const ctx = new EvaluationContext(candles, symbol);
   const atrSeries = atrSeriesFor(candles, config);
   const liq = exitNeedsLiquidity(config) ? cachedLiquidityFeatures(candles) : null;
 

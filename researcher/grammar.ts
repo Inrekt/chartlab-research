@@ -524,7 +524,60 @@ const FUNDING_SETUPS: readonly SetupDef[] = FUNDING_HOURS_UTC.map((hour) => ({
   build: (): ConditionAtom[] => [{ kind: "time", hourRangeUtc: [hour, hour + 1] }],
 }));
 
-export const SETUPS: readonly SetupDef[] = [...BASE_SETUPS, ...LIQUIDITY_SETUPS, ...FUNDING_SETUPS];
+// ── Семейство «перегруженное плечо» ─────────────────────────────────────────
+// Пре-регистрация: docs/family-funding-preregistration.md.
+// Экстремальная ставка означает, что одна сторона рынка платит за право
+// оставаться в позиции — тот же носитель причины, что у ликвидити-магнита.
+// Сторона фандинга зафиксирована ВЫСОКОЙ: в крипте ставка положительна почти
+// всегда, поэтому «перегружены шорты» — редкий хвост без выборки.
+const FUND_WINDOWS_DAYS = [30, 90] as const;
+const FUND_PERCENTILES = [80, 90, 95] as const;
+
+/**
+ * Гипотеза семейства про МОМЕНТ входа, а не про настройку выхода, поэтому
+ * ширина стопа фиксирована, а варьируется только то, чего мы честно не знаем:
+ * цель в R и горизонт удержания (за сколько разряжается перегруженность).
+ */
+const FUND_PRESSURE_EXITS: readonly RrExit[] = [1, 2, 3].flatMap((takeR) =>
+  [10, 20, 40].map((maxBars) => ({ stopAtr: 2, takeR, maxBars })),
+);
+
+const fundPressureSetupId = (windowDays: number, percentile: number): string =>
+  `fundpress_w${windowDays}_p${percentile}`;
+
+/** Параметры сетапа по id — нужны соседям по сетке для ворот плато. */
+const FUND_PARAMS = new Map<string, { windowDays: number; percentile: number }>(
+  FUND_WINDOWS_DAYS.flatMap((windowDays) =>
+    FUND_PERCENTILES.map(
+      (percentile) =>
+        [fundPressureSetupId(windowDays, percentile), { windowDays, percentile }] as const,
+    ),
+  ),
+);
+
+const FUNDING_PRESSURE_SETUPS: readonly SetupDef[] = FUND_WINDOWS_DAYS.flatMap((windowDays) =>
+  FUND_PERCENTILES.map((percentile) => ({
+    id: fundPressureSetupId(windowDays, percentile),
+    family: "funding_pressure",
+    // Приор низкий: экстремумы фандинга — самый известный публичный индикатор
+    // в крипте, и лёгкий край здесь давно бы съели.
+    prior: 0.5,
+    fixedRule: true,
+    exits: FUND_PRESSURE_EXITS,
+    // Направление сделки НЕ влияет на условие: сетап один и тот же, а лонг
+    // против высокого фандинга — внутренний контроль к шорту.
+    build: (): ConditionAtom[] => [
+      { kind: "funding", direction: "above", percentile, windowDays },
+    ],
+  })),
+);
+
+export const SETUPS: readonly SetupDef[] = [
+  ...BASE_SETUPS,
+  ...LIQUIDITY_SETUPS,
+  ...FUNDING_SETUPS,
+  ...FUNDING_PRESSURE_SETUPS,
+];
 
 /**
  * Соседи сетапа по СЕТКЕ ПАРАМЕТРОВ семейства — ±1 шаг по одному измерению.
@@ -534,6 +587,24 @@ export const SETUPS: readonly SetupDef[] = [...BASE_SETUPS, ...LIQUIDITY_SETUPS,
  * Для остальных семейств — пусто: их соседи задаются сеткой выходов.
  */
 export function setupNeighbors(setupId: string): string[] {
+  const fund = FUND_PARAMS.get(setupId);
+  if (fund) {
+    // Без соседей плато отсекло бы семейство, ничего не проверив: у выхода
+    // варьируются два измерения, но плато смотрит на устойчивость ПРАВИЛА.
+    const out: string[] = [];
+    for (const w of FUND_WINDOWS_DAYS) {
+      if (w !== fund.windowDays) out.push(fundPressureSetupId(w, fund.percentile));
+    }
+    const i = (FUND_PERCENTILES as readonly number[]).indexOf(fund.percentile);
+    for (const d of [-1, 1]) {
+      const j = i + d;
+      if (j >= 0 && j < FUND_PERCENTILES.length) {
+        out.push(fundPressureSetupId(fund.windowDays, FUND_PERCENTILES[j]));
+      }
+    }
+    return out.filter((id) => FUND_PARAMS.has(id));
+  }
+
   const p = LIQ_PARAMS.get(setupId);
   if (!p) return [];
   const out: string[] = [];

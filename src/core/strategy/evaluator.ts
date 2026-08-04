@@ -1,5 +1,6 @@
 import type { Candle, ConditionAtom, ConditionGroup, IndicatorRef } from "../types";
 import { cachedLiquidityFeatures } from "../liquidations/clusterSeries";
+import { cachedFundingPercentile, FUNDING_PAYOUTS_PER_DAY } from "../funding/fundingSeries";
 import {
   adx,
   atr as atrIndicator,
@@ -230,10 +231,13 @@ export function sharedSeriesCacheFor(candles: Candle[]): Map<string, (number | n
 export class EvaluationContext {
   private cache: Map<string, (number | null)[]>;
   private candles: Candle[];
+  /** Нужен только атомам, чьи данные внешние по отношению к свечам (фандинг). */
+  private symbol?: string;
 
-  constructor(candles: Candle[]) {
+  constructor(candles: Candle[], symbol?: string) {
     this.candles = candles;
     this.cache = sharedSeriesCacheFor(candles);
+    this.symbol = symbol;
   }
 
   private seriesFor(ref: IndicatorRef): (number | null)[] {
@@ -335,6 +339,23 @@ export class EvaluationContext {
         divergenceRefCache.set(atom, oscRef);
       }
       return matchesDivergence(this.candles, this.seriesFor(oscRef), index, atom);
+    }
+
+    if (atom.kind === "funding") {
+      // Без символа ряд ставок не построить. Возвращаем false, а не «как
+      // будто условие выполнено»: неизвестность не должна становиться сигналом.
+      if (!this.symbol) return false;
+      const rank = cachedFundingPercentile(
+        this.candles,
+        this.symbol,
+        atom.windowDays * FUNDING_PAYOUTS_PER_DAY,
+      )[index];
+      if (!Number.isFinite(rank)) return false;
+      // Порог симметричен: percentile 90 означает «верхние 10%» для above и
+      // «нижние 10%» для below.
+      return atom.direction === "above"
+        ? rank >= atom.percentile
+        : rank <= 100 - atom.percentile;
     }
 
     return false;
