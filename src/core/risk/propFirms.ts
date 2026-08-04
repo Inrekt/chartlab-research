@@ -12,7 +12,7 @@ import { PROFILES } from "./propGovernor";
  * число стоит счёта целиком.
  */
 
-export type FirmId = "upscale" | "hyrotrader";
+export type FirmId = "upscale" | "hyrotrader" | "breakout";
 
 export interface PropFirm {
   id: FirmId;
@@ -26,7 +26,11 @@ export interface PropFirm {
   profitSplit: string;
   /** Размеры счетов. */
   accountSizes: string;
-  /** Разрешены ли боты/алгоритмы. null — в документации не сказано. */
+  /**
+   * Разрешены ли боты. Для нас вопрос закрыт независимо от ответа фирмы:
+   * владелец открывает сделки РУКАМИ, машина только находит их. Поле оставлено
+   * для случая, если исполнение когда-нибудь захотят автоматизировать.
+   */
   botsAllowed: boolean | null;
   /** Когда правила читались с сайта. */
   checkedOn: string;
@@ -64,6 +68,44 @@ const HYRO_TWO_STEP_2: PropProfile = {
   profitTargetPct: 0.05,
 };
 
+/**
+ * Breakout. Прочитано 2026-08-05 с breakoutprop.com.
+ * Все челленджи одноэтапные, просадка ЯВНО статическая («equity floor set at
+ * account start»), дневной лимит обнуляется в 00:30 UTC — не в полночь.
+ * Отдельно ценно: правила консистентности нет, минимума торговых дней нет,
+ * ограничения по времени нет.
+ */
+const BREAKOUT_BASE = {
+  minProfitableDays: 0,
+  dailyLossPct: 0.03,
+  totalLossBasis: "initial" as const,
+  maxDayShareOfProfit: null,
+};
+
+const BREAKOUT_CLASSIC: PropProfile = {
+  ...BREAKOUT_BASE,
+  id: "accelerated",
+  label: "Breakout 1-Step Classic",
+  profitTargetPct: 0.1,
+  totalLossPct: 0.06,
+};
+
+const BREAKOUT_PRO: PropProfile = {
+  ...BREAKOUT_BASE,
+  id: "accelerated",
+  label: "Breakout 1-Step Pro",
+  profitTargetPct: 0.12,
+  totalLossPct: 0.05,
+};
+
+const BREAKOUT_TURBO: PropProfile = {
+  ...BREAKOUT_BASE,
+  id: "accelerated",
+  label: "Breakout 1-Step Turbo",
+  profitTargetPct: 0.09,
+  totalLossPct: 0.03,
+};
+
 export const FIRMS: Record<FirmId, PropFirm> = {
   upscale: {
     id: "upscale",
@@ -97,6 +139,18 @@ export const FIRMS: Record<FirmId, PropFirm> = {
     botsAllowed: null,
     checkedOn: "2026-08-05",
     profiles: [HYRO_ONE_STEP, HYRO_TWO_STEP_1, HYRO_TWO_STEP_2],
+  },
+  breakout: {
+    id: "breakout",
+    label: "Breakout",
+    site: "breakoutprop.com",
+    buyWith: "крипта, разовый платёж",
+    payoutIn: "крипта, по требованию 24/7, минимум $50",
+    profitSplit: "80%, 90% за доплату при покупке",
+    accountSizes: "$5 000 — $200 000",
+    botsAllowed: null,
+    checkedOn: "2026-08-05",
+    profiles: [BREAKOUT_CLASSIC, BREAKOUT_PRO, BREAKOUT_TURBO],
   },
 };
 
