@@ -266,14 +266,37 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
    * Пишем обе величины в журнал: переход на очищенную оценку — отдельная
    * пре-регистрация, и делать её надо по наблюдениям боевых ночей.
    */
-  const meanEstimationVar =
-    stageASharpes.length > 0
-      ? stageASharpes.reduce(
-          (sum, sr, i) => sum + (1 + (sr * sr) / 2) / Math.max(stageATradeCounts[i], 2),
+  /**
+   * ОЦЕНКА ДИСПЕРСИИ, по которой считается планка дефляции. Наблюдаемый Шарп
+   * = истинный + ошибка оценивания с дисперсией ≈ (1+ŝ²/2)/T. У кандидата с
+   * 8 сделками эта ошибка колоссальна, и три таких записи задирают планку
+   * всей ночи (ночь 03.08: sr0=4.11 при Шарпах кандидатов 0.08-0.15 —
+   * ворота перестали проверять и стали отказом по построению).
+   *
+   * Поэтому дисперсия считается по кандидатам, которых вообще ИЗМЕРИМО
+   * оценивать (≥40 сделок), и из неё вычитается средняя дисперсия
+   * оценивания по ним же. Формула DSR и порог 0.95 не меняются — меняется
+   * оценщик одного входа, в сторону состоятельности.
+   * Пре-регистрация с замерами: docs/dsr-variance-preregistration.md.
+   */
+  const MIN_TRADES_FOR_VARIANCE = 40;
+  const thickIdx = stageATradeCounts
+    .map((t, i) => (t >= MIN_TRADES_FOR_VARIANCE ? i : -1))
+    .filter((i) => i >= 0);
+  const estimationVar = (indices: readonly number[]): number =>
+    indices.length > 0
+      ? indices.reduce(
+          (sum, i) =>
+            sum + (1 + (stageASharpes[i] * stageASharpes[i]) / 2) / Math.max(stageATradeCounts[i], 2),
           0,
-        ) / stageASharpes.length
+        ) / indices.length
       : 0;
-  const debiasedBatchVariance = Math.max(0, batchSharpeVariance - meanEstimationVar);
+  const thickVariance =
+    thickIdx.length >= 5 ? moments(thickIdx.map((i) => stageASharpes[i])).stdDev ** 2 : batchSharpeVariance;
+  const deflationVariance = Math.max(
+    0,
+    thickVariance - estimationVar(thickIdx.length >= 5 ? thickIdx : stageASharpes.map((_, i) => i)),
+  );
   log(`  прошло ${survivorsA.length}/${specs.length}.`);
 
   // Диагностика ПРОЦЕССА на всей партии (с проигравшими): RC Уайта — «нашла
@@ -442,7 +465,9 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   for (const f of finalists) {
     if (!applyGate("gate_temporal", f, gateTemporal(f.trades))) continue;
     const netRs = netRMultiples(f.trades);
-    const dsrGate = gateDsr(netRs, nEffective, batchSharpeVariance, debiasedBatchVariance);
+    // Вердикт — по очищенной оценке; наивная пишется рядом для сравнимости
+    // ночей и обратимости перехода.
+    const dsrGate = gateDsr(netRs, nEffective, deflationVariance, batchSharpeVariance);
     if (!applyGate("gate_dsr", f, dsrGate)) continue;
     const netStats = statsAfterCosts(f.trades);
     // Реализованное соотношение выигрыш/проигрыш, а не номинальный takeR:

@@ -276,7 +276,15 @@ const arg = (name: string, fallback: string) => {
 };
 
 const isMain = process.argv[1]?.endsWith("calibrate.ts");
-if (isMain && arg("mode", "gates") === "oot") {
+if (isMain && arg("mode", "gates") === "dsr") {
+  const batches = Number(arg("batches", "400"));
+  const seed = Number(arg("seed", "20260804"));
+  const tau = Number(arg("tau", "0.03"));
+  const rows = runDsrSweep(batches, seed, tau);
+  console.error(`Партия 600 кандидатов, истинная дисперсия Шарпа ${tau}, N_eff 8500, финалист 4000 сделок`);
+  console.table(rows);
+  console.log(JSON.stringify({ mode: "dsr", batches, seed, tau, rows }, null, 1));
+} else if (isMain && arg("mode", "gates") === "oot") {
   const streams = Number(arg("streams", "400"));
   const seed = Number(arg("seed", "20260731"));
   const sweep = runOotSweep(streams, seed);
@@ -299,4 +307,122 @@ if (isMain && arg("mode", "gates") === "oot") {
     );
   }
   console.log(JSON.stringify({ streams, seed, grid }, null, 1));
+}
+
+// ── Режим DSR: чем мерить дисперсию партии ──────────────────────────────────
+
+export interface DsrEstimators {
+  naive: number;
+  thick: number;
+  robust: number;
+  debiased: number;
+  /** Только измеримые кандидаты И вычет шума оценивания — кандидат в бой. */
+  thickDebiased: number;
+}
+
+/**
+ * Оценки дисперсии Шарпов партии четырьмя способами.
+ *
+ * Задача не «сделать планку ниже», а «перестать измерять шум». Наблюдаемый
+ * Шарп кандидата с 8 сделками — почти чистая ошибка оценивания (её SD ≈
+ * 1/√T), и один такой кандидат способен задрать планку всей ночи. В боевом
+ * журнале 03.08 это дало sr0 = 4.11 при Шарпах кандидатов 0.08–0.15: ворота
+ * перестали быть проверкой и стали отказом по построению.
+ */
+export function batchVarianceEstimators(
+  sharpes: readonly number[],
+  tradeCounts: readonly number[],
+  minTradesForVariance = 40,
+): DsrEstimators {
+  const naive = moments(sharpes).stdDev ** 2;
+  const idx = tradeCounts.map((t, i) => (t >= minTradesForVariance ? i : -1)).filter((i) => i >= 0);
+  const thickS = idx.map((i) => sharpes[i]);
+  const thick = thickS.length >= 5 ? moments(thickS).stdDev ** 2 : naive;
+  // Робастная: MAD × 1.4826 — один вырожденный кандидат не тянет оценку.
+  const med = median(thickS.length >= 5 ? thickS : sharpes);
+  const base = thickS.length >= 5 ? thickS : sharpes;
+  const mad = median(base.map((s) => Math.abs(s - med)));
+  const robust = (1.4826 * mad) ** 2;
+  const meanEstVar =
+    sharpes.length > 0
+      ? sharpes.reduce((sum, s, i) => sum + (1 + (s * s) / 2) / Math.max(tradeCounts[i], 2), 0) /
+        sharpes.length
+      : 0;
+  const thickEstVar =
+    idx.length > 0
+      ? idx.reduce(
+          (sum, i) => sum + (1 + (sharpes[i] * sharpes[i]) / 2) / Math.max(tradeCounts[i], 2),
+          0,
+        ) / idx.length
+      : meanEstVar;
+  return {
+    naive,
+    thick,
+    robust,
+    debiased: Math.max(0, naive - meanEstVar),
+    thickDebiased: Math.max(0, thick - thickEstVar),
+  };
+}
+
+/** Реалистичное число сделок: много тонких, немного толстых. */
+function sampleTradeCount(rand: () => number): number {
+  const u = rand();
+  if (u < 0.55) return 8 + Math.floor(rand() * 32); // 8–40, «еле живые»
+  if (u < 0.85) return 40 + Math.floor(rand() * 260);
+  return 300 + Math.floor(rand() * 4700);
+}
+
+interface DsrRow {
+  оценка: string;
+  "sr0 (медиана)": number;
+  "ложный проход": number;
+  "recall Шарп 0.10": number;
+}
+
+/**
+ * Под глобальным нулём (истинная дисперсия τ) и при истинном крае считаем,
+ * какую долю кандидатов пропустят ворота DSR при каждой оценке дисперсии.
+ * Кандидат, доходящий до DSR, имеет много сделок — берём T = 4000.
+ */
+export function runDsrSweep(batches: number, seed: number, tau = 0.03): DsrRow[] {
+  const B = 600;
+  const N_EFF = 8500;
+  const T_FINAL = 4000;
+  const keys: (keyof DsrEstimators)[] = ["naive", "thick", "robust", "debiased", "thickDebiased"];
+  const sr0s: Record<string, number[]> = { naive: [], thick: [], robust: [], debiased: [], thickDebiased: [] };
+  const falsePass: Record<string, number> = { naive: 0, thick: 0, robust: 0, debiased: 0, thickDebiased: 0 };
+  const recall: Record<string, number> = { naive: 0, thick: 0, robust: 0, debiased: 0, thickDebiased: 0 };
+
+  for (let b = 0; b < batches; b++) {
+    const rand = mulberry32(seed + b * 7919);
+    const g = gauss(rand);
+    const sharpes: number[] = [];
+    const counts: number[] = [];
+    for (let i = 0; i < B; i++) {
+      const T = sampleTradeCount(rand);
+      const trueS = tau * g(); // истинная дисперсия партии
+      const noise = Math.sqrt((1 + (trueS * trueS) / 2) / T) * g();
+      sharpes.push(trueS + noise);
+      counts.push(T);
+    }
+    const est = batchVarianceEstimators(sharpes, counts);
+    // финалист под нулём и с краем — оба с T_FINAL сделок
+    const nullS = Math.sqrt(1 / T_FINAL) * g();
+    const edgeS = 0.1 + Math.sqrt(1 / T_FINAL) * g();
+    for (const k of keys) {
+      const varFloor = 1 / T_FINAL;
+      const varSR = Math.max(est[k], varFloor);
+      const sr0 = expectedMaxSharpe(N_EFF, varSR);
+      sr0s[k].push(sr0);
+      const dsr = (s: number) => normCdf(((s - sr0) * Math.sqrt(T_FINAL - 1)) / 1);
+      if (dsr(nullS) >= 0.95) falsePass[k] += 1;
+      if (dsr(edgeS) >= 0.95) recall[k] += 1;
+    }
+  }
+  return keys.map((k) => ({
+    оценка: k,
+    "sr0 (медиана)": Number(median(sr0s[k]).toFixed(3)),
+    "ложный проход": Number((falsePass[k] / batches).toFixed(3)),
+    "recall Шарп 0.10": Number((recall[k] / batches).toFixed(3)),
+  }));
 }

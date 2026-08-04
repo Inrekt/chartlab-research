@@ -211,15 +211,12 @@ export function gateDsr(
   nEffective: number,
   batchSharpeVariance: number,
   /**
-   * ТОЛЬКО ДЛЯ ЗАМЕРА, на вердикт не влияет. Дисперсия Шарпов партии,
-   * очищенная от шума оценивания: Var(наблюдаемая) = Var(истинная) +
-   * E[Var оценки], а Var[ŝ] ≈ (1+ŝ²/2)/T. Сырая величина завышена тем
-   * сильнее, чем меньше сделок было у кандидатов стадии-16, то есть планка
-   * дефляции сейчас зависит от артефакта конвейера, а не от свойств
-   * пространства стратегий. Пишем оба числа в журнал, чтобы решение о
-   * переходе принималось по НАБЛЮДЕНИЯМ боевых ночей, а не по рассуждению.
+   * ТОЛЬКО ДЛЯ ЗАПИСИ, на вердикт не влияет: прежняя (наивная) дисперсия
+   * партии. Держим её рядом с боевой, чтобы ночи оставались сравнимыми, а
+   * переход на очищенную оценку — обратимым и проверяемым по журналу.
+   * Пре-регистрация: docs/dsr-variance-preregistration.md.
    */
-  debiasedBatchVariance?: number,
+  comparisonVariance?: number,
 ): GateResult {
   const T = netRMultiples.length;
   if (T < 2) return fail("DSR: меньше двух сделок", { T });
@@ -237,13 +234,13 @@ export function gateDsr(
     nEffective,
     dsr: Number(dsr.toFixed(4)),
   };
-  if (debiasedBatchVariance !== undefined) {
-    const varShadow = Math.max(debiasedBatchVariance, varFloor);
+  if (comparisonVariance !== undefined) {
+    const varShadow = Math.max(comparisonVariance, varFloor);
     const sr0Shadow = expectedMaxSharpe(Math.max(nEffective, 1), varShadow);
     metrics.varSR = Number(varSR.toFixed(6));
-    metrics.varSRdebiased = Number(varShadow.toFixed(6));
-    metrics.sr0debiased = Number(sr0Shadow.toFixed(4));
-    metrics.dsrDebiased = Number(
+    metrics.varSRnaive = Number(varShadow.toFixed(6));
+    metrics.sr0naive = Number(sr0Shadow.toFixed(4));
+    metrics.dsrNaive = Number(
       deflatedSharpe(sr, sr0Shadow, T, m.skewness, m.kurtosis).toFixed(4),
     );
   }
