@@ -3,6 +3,11 @@ import { EvaluationContext, sharedSeriesCacheFor } from "../strategy/evaluator";
 import { cachedLiquidityFeatures, type LiquidityFeatures } from "../liquidations/clusterSeries";
 import { atr as atrIndicator } from "../indicators";
 
+interface PendingAdd {
+  price: number;
+  weight: number;
+}
+
 interface OpenPosition {
   direction: "long" | "short";
   entryTime: number;
@@ -11,6 +16,17 @@ interface OpenPosition {
   targetPrice: number;
   barsHeld: number;
   entryIndex: number;
+  /** Суммарный исполненный объём в долях; без доборов ровно 1. */
+  units: number;
+  /** Σ (объём × цена) по всем исполненным входам — из него средняя цена. */
+  costBasis: number;
+  /**
+   * Знаменатель R: ширина стопа от ПЕРВОГО входа на единичном объёме. Тот же,
+   * что и у версии без добора, поэтому R-множители сравнимы напрямую.
+   */
+  riskBudget: number;
+  /** Ещё не исполненные доборы, по возрастанию расстояния от входа. */
+  pendingAdds: PendingAdd[];
 }
 
 /**
@@ -166,6 +182,8 @@ function openPositionAt(
     targetPrice = long ? entryPrice + rewardDistance : entryPrice - rewardDistance;
   }
 
+  const plan = planScaleIn(config, entryPrice, stopPrice, signalIndex, liq);
+
   return {
     direction: config.direction,
     entryTime: fillBar.time,
@@ -174,7 +192,73 @@ function openPositionAt(
     targetPrice,
     barsHeld: 0,
     entryIndex: signalIndex + 1,
+    units: plan.firstWeight,
+    costBasis: plan.firstWeight * entryPrice,
+    riskBudget: risk,
+    pendingAdds: plan.adds,
   };
+}
+
+/**
+ * Планирует доборы на скоплениях ликвидности ПРОТИВ сделки.
+ *
+ * Уровни известны в момент входа (это те же ближнее/дальнее скопление, что
+ * уже считает движок) — дискреции в исполнении нет. Размеры подобраны так,
+ * что при исполнении ВСЕХ доборов убыток на стопе равен ровно `riskBudget` —
+ * столько же, сколько потеряла бы та же стратегия без добора. Поэтому первый
+ * вход получается меньше единицы, и «лучше» не может получиться из-за просто
+ * большей ставки.
+ */
+function planScaleIn(
+  config: StrategyConfig,
+  entryPrice: number,
+  stopPrice: number,
+  signalIndex: number,
+  liq: LiquidityFeatures | null,
+): { firstWeight: number; adds: PendingAdd[] } {
+  const none = { firstWeight: 1, adds: [] as PendingAdd[] };
+  const wanted = config.exit.scaleInAdds ?? 0;
+  if (wanted <= 0 || !liq) return none;
+
+  const long = config.direction === "long";
+  const candidates = long
+    ? [liq.nearBelow[signalIndex], liq.farBelow[signalIndex]]
+    : [liq.nearAbove[signalIndex], liq.farAbove[signalIndex]];
+
+  const levels: number[] = [];
+  for (const price of candidates) {
+    if (levels.length >= wanted) break;
+    if (!Number.isFinite(price)) continue;
+    // Строго между входом и стопом. Снаружи это уже не долив внутри живой
+    // гипотезы, а другая сделка.
+    const inside = long ? price < entryPrice && price > stopPrice : price > entryPrice && price < stopPrice;
+    // Уровень один на обе роли — K=2 вырождается в K=1. Это не ошибка, а
+    // отсутствие второго скопления.
+    if (inside && !levels.includes(price)) levels.push(price);
+  }
+  if (levels.length === 0) return none;
+
+  const riskBudget = Math.abs(entryPrice - stopPrice);
+  const totalRisk = levels.reduce((sum, price) => sum + Math.abs(price - stopPrice), riskBudget);
+  const weight = riskBudget / totalRisk;
+  return { firstWeight: weight, adds: levels.map((price) => ({ price, weight })) };
+}
+
+/** Исполняет доборы, чьи уровни бар прошёл. Мутирует позицию, как и `barsHeld`. */
+function fillPendingAdds(open: OpenPosition, bar: Candle): void {
+  if (open.pendingAdds.length === 0) return;
+
+  const stillPending: PendingAdd[] = [];
+  for (const add of open.pendingAdds) {
+    const touched = open.direction === "long" ? bar.low <= add.price : bar.high >= add.price;
+    if (!touched) {
+      stillPending.push(add);
+      continue;
+    }
+    open.units += add.weight;
+    open.costBasis += add.weight * add.price;
+  }
+  open.pendingAdds = stillPending;
 }
 
 /** Advances an open position by one bar; returns the closed trade, or null if still open. */
@@ -191,6 +275,14 @@ function advanceOpenPosition(
   const hitStop = open.direction === "long" ? bar.low <= open.stopPrice : bar.high >= open.stopPrice;
   const hitTarget = open.direction === "long" ? bar.high >= open.targetPrice : bar.low <= open.targetPrice;
   const timedOut = config.exit.maxBarsInTrade != null && open.barsHeld >= config.exit.maxBarsInTrade;
+
+  // Внутрибарный порядок тиков неизвестен, и от него зависит результат.
+  // Трактуем сомнение ПРОТИВ стратегии: на баре стопа доборы считаются
+  // исполненными (цена и правда обязана была пройти через них по дороге к
+  // стопу, а убыток от этого полный, а не урезанный), на баре цели — нет
+  // (иначе прибыль росла бы из одного предположения о порядке тиков, ведь
+  // долив всегда улучшает среднюю цену).
+  if (hitStop || !hitTarget) fillPendingAdds(open, bar);
 
   if (!hitStop && !hitTarget && !timedOut) return null;
   const exitPrice = hitStop ? open.stopPrice : hitTarget ? open.targetPrice : bar.close;
@@ -210,15 +302,21 @@ function computeRisk(config: StrategyConfig, entryPrice: number, atrValue: numbe
 }
 
 function closeTrade(symbol: string, open: OpenPosition, exitTime: number, exitPrice: number): TradeResult {
-  const risk = Math.abs(open.entryPrice - open.stopPrice);
-  const pnl = open.direction === "long" ? exitPrice - open.entryPrice : open.entryPrice - exitPrice;
-  const rMultiple = risk === 0 ? 0 : pnl / risk;
+  // Средняя цена позиции; без доборов units = 1 и это ровно цена входа.
+  const avgEntry = open.units > 0 ? open.costBasis / open.units : open.entryPrice;
+  // P&L взвешен по объёму, а знаменатель R — ширина стопа от ПЕРВОГО входа на
+  // единичном объёме. Так вариант с добором и без него мерятся одной линейкой.
+  const pnl =
+    open.direction === "long"
+      ? open.units * exitPrice - open.costBasis
+      : open.costBasis - open.units * exitPrice;
+  const rMultiple = open.riskBudget === 0 ? 0 : pnl / open.riskBudget;
 
   return {
     symbol,
     direction: open.direction,
     entryTime: open.entryTime,
-    entryPrice: open.entryPrice,
+    entryPrice: avgEntry,
     exitTime,
     exitPrice,
     stopPrice: open.stopPrice,

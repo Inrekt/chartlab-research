@@ -15,16 +15,37 @@ const familySpecs = (): CandidateSpec[] =>
   [...enumerateAll()].filter((s) => setupFamily(s.setup) === "liquidity_magnet");
 
 describe("семейство ликвидити-магнит", () => {
-  test("размер ровно такой, как записано в пре-регистрации: 216", () => {
+  test("размер ровно такой, как записано в пре-регистрации: 648", () => {
     // 3 порога растянутости × 3 порога плотности × 2 окна × 3 запаса стопа
-    // × 2 направления × 2 ТФ. Число зафиксировано ДО прогона: раздувать
-    // комбинаторику задним числом — та же подгонка, только медленная.
+    // × 3 варианта добора (K=0,1,2) × 2 направления × 2 ТФ. Число зафиксировано
+    // ДО прогона: раздувать комбинаторику задним числом — та же подгонка,
+    // только медленная. Расширение 216 → 648 записано в
+    // docs/family-scale-in-preregistration.md вместе с ценой (планка дефляции).
     const specs = familySpecs();
     const tfs = new Set(specs.map((s) => s.timeframe));
     // enumerateAll перечисляет все три ТФ; ночь гоняет два, поэтому
     // сравниваем на «размер в пересчёте на два ТФ»
-    expect(specs.length / tfs.size * 2).toBe(216);
-    expect(LIQUIDITY_EXITS).toHaveLength(3);
+    expect(specs.length / tfs.size * 2).toBe(648);
+    expect(LIQUIDITY_EXITS).toHaveLength(9);
+  });
+
+  test("K=0 остаётся в сетке — без базлайна добор не с чем сравнивать", () => {
+    const addCounts = new Set(familySpecs().map((s) => (isLiquidityExit(s.exit) ? s.exit.adds : -1)));
+    expect([...addCounts].sort()).toEqual([0, 1, 2]);
+  });
+
+  test("id варианта без добора не изменился — журнал ночи 03.08 остаётся сравним", () => {
+    // Поведенческая дедупликация узнаёт правило по id. Если бы суффикс добора
+    // появился и у K=0, все записи предыдущей ночи перестали бы совпадать, и
+    // те же правила пошли бы на второй прогон как «новые».
+    const baseline = familySpecs().find((s) => isLiquidityExit(s.exit) && s.exit.adds === 0)!;
+    const exit = baseline.exit;
+    expect(isLiquidityExit(exit)).toBe(true);
+    if (!isLiquidityExit(exit)) return;
+
+    expect(candidateId(baseline)).toMatch(/\|q[\d.]+p[\d.]+b\d+$/);
+    const withAdds: CandidateSpec = { ...baseline, exit: { ...exit, adds: 2 } };
+    expect(candidateId(withAdds)).toBe(`${candidateId(baseline)}a2`);
   });
 
   test("у семейства уровневые выходы, у остальных — прежние кратные риску", () => {
@@ -65,17 +86,36 @@ describe("семейство ликвидити-магнит", () => {
 
   test("соседи отличаются ровно одним параметром и остаются в семействе", () => {
     const spec = familySpecs().find(
-      (s) => s.setup.includes("x2.5") && s.setup.includes("w2") && isLiquidityExit(s.exit) && s.exit.stopBufferAtr === 0.5,
+      (s) =>
+        s.setup.includes("x2.5") &&
+        s.setup.includes("w2") &&
+        isLiquidityExit(s.exit) &&
+        s.exit.stopBufferAtr === 0.5 &&
+        s.exit.adds === 1,
     )!;
+    const own = spec.exit as { stopBufferAtr: number; adds: number };
     for (const n of neighborSpecs(spec)) {
       expect(setupFamily(n.setup)).toBe("liquidity_magnet");
-      const setupChanged = n.setup !== spec.setup;
-      const exitChanged =
-        isLiquidityExit(n.exit) &&
-        isLiquidityExit(spec.exit) &&
-        n.exit.stopBufferAtr !== spec.exit.stopBufferAtr;
-      expect(setupChanged !== exitChanged).toBe(true); // ровно одно из двух
+      expect(isLiquidityExit(n.exit)).toBe(true);
+      const near = n.exit as { stopBufferAtr: number; adds: number };
+      const changed = [
+        n.setup !== spec.setup,
+        near.stopBufferAtr !== own.stopBufferAtr,
+        near.adds !== own.adds,
+      ].filter(Boolean);
+      expect(changed).toHaveLength(1); // ровно одно измерение из трёх
     }
+  });
+
+  test("у варианта с добором соседями оказываются K=0 и K=2", () => {
+    // Иначе плато не могло бы отличить «добор работает» от «сработал ровно
+    // один вариант из девяти», а это и есть его работа.
+    const spec = familySpecs().find((s) => isLiquidityExit(s.exit) && s.exit.adds === 1)!;
+    const addsOfNeighbors = neighborSpecs(spec)
+      .filter((n) => n.setup === spec.setup && isLiquidityExit(n.exit))
+      .map((n) => (n.exit as { adds: number }).adds);
+    expect(addsOfNeighbors).toContain(0);
+    expect(addsOfNeighbors).toContain(2);
   });
 
   test("id кандидата семейства читается однозначно и не путается с rr", () => {

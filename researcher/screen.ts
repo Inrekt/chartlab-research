@@ -159,12 +159,20 @@ export function neighborSpecs(spec: CandidateSpec): CandidateSpec[] {
   }
 
   if (isLiquidityExit(spec.exit)) {
-    const grid = [...new Set(LIQUIDITY_EXITS.map((e) => e.stopBufferAtr))].sort((a, b) => a - b);
-    const idx = grid.indexOf(spec.exit.stopBufferAtr);
-    for (const delta of [-1, 1]) {
-      const j = idx + delta;
-      if (j < 0 || j >= grid.length) continue;
-      out.push({ ...spec, exit: { ...spec.exit, stopBufferAtr: grid[j] } });
+    const exit = spec.exit;
+    const dims = [
+      { grid: [...new Set(LIQUIDITY_EXITS.map((e) => e.stopBufferAtr))].sort((a, b) => a - b), own: exit.stopBufferAtr, key: "stopBufferAtr" as const },
+      // Соседи по числу доборов: у варианта K=1 соседями оказываются K=0 и
+      // K=2, то есть плато само проверяет, что добор — не одиночный всплеск.
+      { grid: [...new Set(LIQUIDITY_EXITS.map((e) => e.adds))].sort((a, b) => a - b), own: exit.adds, key: "adds" as const },
+    ];
+    for (const { grid, own, key } of dims) {
+      const idx = grid.indexOf(own);
+      for (const delta of [-1, 1]) {
+        const j = idx + delta;
+        if (j < 0 || j >= grid.length) continue;
+        out.push({ ...spec, exit: { ...exit, [key]: grid[j] } });
+      }
     }
     return out;
   }

@@ -144,6 +144,15 @@ export interface StrategyConfig {
      */
     takeProfit: { type: "rr" | "percent" | "fixed" | "liquidity"; value: number };
     maxBarsInTrade?: number;
+    /**
+     * Доборы: сколько раз позиция доливается на скоплениях ликвидности ПРОТИВ
+     * сделки (0, 1 или 2). Уровни фиксируются в момент входа — ближнее и
+     * дальнее живое скопление, — а размеры подбираются так, что при полном
+     * исполнении убыток на стопе равен 1R, то есть ровно столько же, сколько
+     * у той же стратегии без добора. Требует `stopLoss.type === "liquidity"`.
+     * См. `researcher/docs/family-scale-in-preregistration.md`.
+     */
+    scaleInAdds?: number;
   };
   filters?: ConditionGroup;
 }

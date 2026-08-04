@@ -586,6 +586,12 @@ export interface LiquidityExit {
   stopBufferAtr: number;
   targetPullAtr: number;
   maxBars: number;
+  /**
+   * Сколько доборов на скоплениях ПРОТИВ сделки. Ноль обязателен в сетке как
+   * внутренний базлайн: без него нельзя сказать, дают ли доборы хоть что-то.
+   * Риск нормирован — см. docs/family-scale-in-preregistration.md.
+   */
+  adds: number;
 }
 
 export type ExitSpec = RrExit | LiquidityExit;
@@ -602,18 +608,23 @@ export const EXITS: readonly RrExit[] = STOPS.flatMap((stopAtr) =>
   TAKES.flatMap((takeR) => MAX_BARS.map((maxBars) => ({ stopAtr, takeR, maxBars }))),
 );
 
-/** Запас за дальней ликвидностью, в ATR — единственное измерение выхода семейства. */
+/** Запас за дальней ликвидностью, в ATR — первое измерение выхода семейства. */
 const LIQ_STOP_BUFFERS = [0.25, 0.5, 1] as const;
+/** Число доборов — второе измерение. Ноль обязателен как внутренний базлайн. */
+const LIQ_SCALE_IN_ADDS = [0, 1, 2] as const;
 /** Отступ цели не доходя до уровня и потолок баров — зафиксированы пре-регистрацией. */
 const LIQ_TARGET_PULL = 0.2;
 const LIQ_MAX_BARS = 40;
 
-export const LIQUIDITY_EXITS: readonly LiquidityExit[] = LIQ_STOP_BUFFERS.map((stopBufferAtr) => ({
-  kind: "liquidity" as const,
-  stopBufferAtr,
-  targetPullAtr: LIQ_TARGET_PULL,
-  maxBars: LIQ_MAX_BARS,
-}));
+export const LIQUIDITY_EXITS: readonly LiquidityExit[] = LIQ_STOP_BUFFERS.flatMap((stopBufferAtr) =>
+  LIQ_SCALE_IN_ADDS.map((adds) => ({
+    kind: "liquidity" as const,
+    stopBufferAtr,
+    targetPullAtr: LIQ_TARGET_PULL,
+    maxBars: LIQ_MAX_BARS,
+    adds,
+  })),
+);
 
 export interface CandidateSpec {
   setup: string;
@@ -633,7 +644,11 @@ export function candidateId(spec: CandidateSpec): string {
 /** Кодировка выхода в id. Форма rr неизменна с эпохи 1 — журнал сравним. */
 function exitTag(exit: ExitSpec): string {
   if (isLiquidityExit(exit)) {
-    return `q${exit.stopBufferAtr}p${exit.targetPullAtr}b${exit.maxBars}`;
+    // Суффикс добора появляется только при adds > 0: иначе id всех записей
+    // ночи 03.08 поехали бы, и поведенческая дедупликация перестала бы их
+    // узнавать — те же правила погнались бы второй раз как «новые».
+    const scaleIn = exit.adds > 0 ? `a${exit.adds}` : "";
+    return `q${exit.stopBufferAtr}p${exit.targetPullAtr}b${exit.maxBars}${scaleIn}`;
   }
   return `s${exit.stopAtr}t${exit.takeR}b${exit.maxBars}`;
 }
@@ -838,6 +853,7 @@ export function toStrategyConfig(spec: CandidateSpec): StrategyConfig {
         ? {
             stopLoss: { type: "liquidity" as const, value: spec.exit.stopBufferAtr },
             takeProfit: { type: "liquidity" as const, value: spec.exit.targetPullAtr },
+            scaleInAdds: spec.exit.adds,
           }
         : {
             stopLoss: { type: "atr" as const, value: spec.exit.stopAtr },
