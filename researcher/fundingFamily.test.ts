@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, test } from "vitest";
 import { enumerateAll, exitsFor, setupFamily, setupNeighbors, toStrategyConfig } from "./grammar.ts";
 import { neighborSpecs } from "./screen.ts";
@@ -57,5 +58,16 @@ describe("семейство «перегруженное плечо»", () => {
     expect(ids).toContain("fundpress_w90_p90"); // другое окно
     expect(ids).toContain("fundpress_w30_p80"); // соседний порог
     expect(ids).toContain("fundpress_w30_p95");
+  });
+});
+
+describe("источник ставок подключён", () => {
+  test("корпус подключает чтение фандинга с диска", async () => {
+    // Ядро само с диска не читает (иначе ломается сборка приложения), поэтому
+    // источник подключается в корпусе — единственном месте, через которое
+    // проходит любой исследовательский вход. Если эту строку удалить, семейство
+    // молча перестанет давать сделки, не сломав ни одного другого теста.
+    const source = await readFile(new URL("./corpus.ts", import.meta.url), "utf8");
+    expect(source).toContain("useCsvFunding");
   });
 });

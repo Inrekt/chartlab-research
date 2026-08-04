@@ -12,7 +12,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import type { Candle } from "../src/core/types/index.ts";
+import { useCsvFunding } from "./fundingCsv.ts";
 import type { SignalTf } from "./grammar.ts";
+
+// Через корпус проходит ЛЮБОЙ исследовательский вход, поэтому источник ставок
+// фандинга подключается здесь. Подключать его в каждой точке входа отдельно —
+// значит однажды забыть в одной, и целое семейство молча перестанет давать
+// сделки, не сломав при этом ни одного теста.
+useCsvFunding();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const HISTORY_DIR = join(__dirname, "..", "public", "data", "history");

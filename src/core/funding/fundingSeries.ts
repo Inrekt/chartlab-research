@@ -1,5 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { Candle } from "../types";
 
 /**
@@ -22,44 +20,31 @@ export interface FundingHistory {
   rates: Float64Array;
 }
 
-function fundingDir(): string {
-  const base =
-    process.env.COLLECT_DIR ?? join(process.env.HOME ?? "", ".chartlab", "data-repo", "market");
-  return join(base, "funding");
-}
+/**
+ * Откуда берутся ставки.
+ *
+ * Раньше этот модуль читал CSV сам, и из-за этого вычислитель условий —
+ * браузерный код — начинал зависеть от файловой системы. В research-репозитории
+ * это работало, а сборка приложения ломалась. Теперь источник ПОДКЛЮЧАЕТСЯ:
+ * ноду ставит загрузчик с диска, браузеру подключать нечего, и условие по
+ * фандингу там просто ложно.
+ */
+export type FundingLoader = (symbol: string) => FundingHistory | null;
 
+let loader: FundingLoader = () => null;
 const historyCache = new Map<string, FundingHistory | null>();
 
-/** Читает историю ставок символа. `null`, если истории нет — это не ошибка. */
+/** Подключает источник ставок. Сбрасывает кэш: источник сменился. */
+export function setFundingLoader(fn: FundingLoader): void {
+  loader = fn;
+  clearFundingCache();
+}
+
+/** История ставок символа. `null`, если её нет — это не ошибка. */
 export function loadFundingHistory(symbol: string): FundingHistory | null {
   const cached = historyCache.get(symbol);
   if (cached !== undefined) return cached;
-
-  const path = join(fundingDir(), `${symbol}.csv`);
-  if (!existsSync(path)) {
-    historyCache.set(symbol, null);
-    return null;
-  }
-
-  const lines = readFileSync(path, "utf8").split("\n");
-  const times: number[] = [];
-  const rates: number[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line) continue;
-    const comma = line.indexOf(",");
-    if (comma < 0) continue;
-    const time = Date.parse(line.slice(0, comma));
-    const rate = Number(line.slice(comma + 1));
-    if (!Number.isFinite(time) || !Number.isFinite(rate)) continue;
-    times.push(time);
-    rates.push(rate);
-  }
-
-  const history =
-    times.length > 0
-      ? { times: Float64Array.from(times), rates: Float64Array.from(rates) }
-      : null;
+  const history = loader(symbol);
   historyCache.set(symbol, history);
   return history;
 }

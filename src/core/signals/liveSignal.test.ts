@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Candle, StrategyConfig } from "../types";
-import { confluence, detectSignal } from "./liveSignal";
+import { confluence, detectSignal, type LiveSignal } from "./liveSignal";
 import { runBacktest } from "../backtest/engine";
 
 const HOUR = 3600;
@@ -90,7 +90,7 @@ describe("живой сигнал", () => {
 });
 
 describe("схождение сигналов", () => {
-  const make = (symbol: string, direction: "long" | "short"): ReturnType<typeof detectSignal> => ({
+  const make = (symbol: string, direction: "long" | "short"): LiveSignal => ({
     symbol,
     direction,
     signalBarTime: 1,

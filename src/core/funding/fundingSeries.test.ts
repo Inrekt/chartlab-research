@@ -1,22 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { Candle, StrategyConfig } from "../types";
-import { clearFundingCache, fundingPercentile } from "./fundingSeries";
+import {
+  clearFundingCache,
+  fundingPercentile,
+  setFundingLoader,
+  type FundingHistory,
+} from "./fundingSeries";
 import { EvaluationContext } from "../strategy/evaluator";
+
+/**
+ * Ставки подаются В ПАМЯТИ, а не через файлы. Это тест браузерного модуля, и он
+ * не должен уметь читать диск — ровно поэтому чтение CSV и живёт отдельно, в
+ * researcher/fundingCsv.ts.
+ */
+const store = new Map<string, FundingHistory>();
 
 const HOUR = 3600;
 const EIGHT_HOURS = 8 * HOUR;
 
-let root: string;
-let prevDir: string | undefined;
 
 function writeFunding(symbol: string, rows: Array<[number, number]>): void {
-  const dir = join(root, "funding");
-  mkdirSync(dir, { recursive: true });
-  const body = rows.map(([sec, rate]) => `${new Date(sec * 1000).toISOString()},${rate}`).join("\n");
-  writeFileSync(join(dir, `${symbol}.csv`), `time,fundingRate\n${body}\n`);
+  store.set(symbol, {
+    times: Float64Array.from(rows.map(([sec]) => sec * 1000)),
+    rates: Float64Array.from(rows.map(([, rate]) => rate)),
+  });
+  clearFundingCache();
 }
 
 function bars(count: number, startSec: number, stepSec = HOUR): Candle[] {
@@ -31,17 +39,13 @@ function bars(count: number, startSec: number, stepSec = HOUR): Candle[] {
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "funding-test-"));
-  prevDir = process.env.COLLECT_DIR;
-  process.env.COLLECT_DIR = root;
-  clearFundingCache();
+  store.clear();
+  setFundingLoader((symbol) => store.get(symbol) ?? null);
 });
 
 afterEach(() => {
-  if (prevDir === undefined) delete process.env.COLLECT_DIR;
-  else process.env.COLLECT_DIR = prevDir;
+  store.clear();
   clearFundingCache();
-  rmSync(root, { recursive: true, force: true });
 });
 
 describe("ряд процентиля фандинга", () => {
