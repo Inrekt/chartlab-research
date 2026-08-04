@@ -109,7 +109,7 @@ export function simulateExits(
   return trades;
 }
 
-function atrSeriesFor(candles: Candle[], config: StrategyConfig): (number | null)[] | null {
+export function atrSeriesFor(candles: Candle[], config: StrategyConfig): (number | null)[] | null {
   if (config.exit.stopLoss.type !== "atr") return null;
   // ATR(14) не зависит от конфига вообще — но пересчитывался на КАЖДОГО
   // кандидата (2000 раз на символ за ночь). Живёт в общем кэше серий символа.
@@ -127,16 +127,30 @@ export function exitNeedsLiquidity(config: StrategyConfig): boolean {
   return config.exit.stopLoss.type === "liquidity" || config.exit.takeProfit.type === "liquidity";
 }
 
-/** Opens a position filled at `signalIndex + 1`'s open, or null if risk is unknowable. */
-function openPositionAt(
-  candles: Candle[],
+export interface EntryLevels {
+  stopPrice: number;
+  targetPrice: number;
+  /** Расстояние до стопа — единица риска сделки. */
+  risk: number;
+}
+
+/**
+ * Стоп и цель для входа по цене `entryPrice` на сигнальном баре `signalIndex`.
+ *
+ * Вынесено из `openPositionAt` НЕ ради красоты: этой же функцией считается
+ * живой сигнал. Пока расчёт один на двоих, торговый сигнал физически не может
+ * разойтись с тем, что проверял бэктест. Скопируй эту логику во второе место —
+ * и однажды они разъедутся молча.
+ *
+ * `null` означает, что сделки нет: риск неизмерим либо у стратегии нет цели.
+ */
+export function planEntryLevels(
   config: StrategyConfig,
   signalIndex: number,
+  entryPrice: number,
   atrSeries: (number | null)[] | null,
   liq: LiquidityFeatures | null,
-): OpenPosition | null {
-  const fillBar = candles[signalIndex + 1];
-  const entryPrice = fillBar.open;
+): EntryLevels | null {
   const long = config.direction === "long";
 
   // ── Стоп ────────────────────────────────────────────────────────────────
@@ -183,6 +197,24 @@ function openPositionAt(
     targetPrice = long ? entryPrice + rewardDistance : entryPrice - rewardDistance;
   }
 
+  return { stopPrice, targetPrice, risk };
+}
+
+/** Opens a position filled at `signalIndex + 1`'s open, or null if risk is unknowable. */
+function openPositionAt(
+  candles: Candle[],
+  config: StrategyConfig,
+  signalIndex: number,
+  atrSeries: (number | null)[] | null,
+  liq: LiquidityFeatures | null,
+): OpenPosition | null {
+  const fillBar = candles[signalIndex + 1];
+  const entryPrice = fillBar.open;
+
+  const levels = planEntryLevels(config, signalIndex, entryPrice, atrSeries, liq);
+  if (!levels) return null;
+  const { stopPrice, targetPrice } = levels;
+
   const plan = planScaleIn(config, entryPrice, stopPrice, signalIndex, liq);
 
   return {
@@ -195,7 +227,7 @@ function openPositionAt(
     entryIndex: signalIndex + 1,
     units: plan.firstWeight,
     costBasis: plan.firstWeight * entryPrice,
-    riskBudget: risk,
+    riskBudget: levels.risk,
     pendingAdds: plan.adds,
   };
 }
