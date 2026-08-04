@@ -5,3 +5,6 @@ node_modules/
 /data/
 night-summary.json
 *.tsbuildinfo
+
+# Карта кода — регенерируется `graphify update .`, в истории не нужна.
+graphify-out/
