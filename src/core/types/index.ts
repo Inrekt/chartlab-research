@@ -124,7 +124,15 @@ export type ConditionAtom =
    * Требует символа в контексте вычисления: без него ряд не построить, и
    * условие честно возвращает false.
    */
-  | { kind: "funding"; direction: "above" | "below"; percentile: number; windowDays: number };
+  | { kind: "funding"; direction: "above" | "below"; percentile: number; windowDays: number }
+  /**
+   * Дисбаланс тейкерского потока бара в верхних (`buy`) или нижних (`sell`)
+   * процентах собственной скользящей истории. Меряет агрессоров, бьющих по
+   * рынку: перекос — это толпа, покупающая по любой цене. Источник —
+   * почасовые futures-метрики; без символа и без данных условие ложно.
+   * Пре-регистрация: researcher/docs/atoms-taker-flow-preregistration.md.
+   */
+  | { kind: "takerFlow"; direction: "buy" | "sell"; percentile: number; windowDays: number };
 
 export interface ConditionGroup {
   operator: "AND" | "OR";

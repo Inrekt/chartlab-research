@@ -66,12 +66,12 @@ describe("ряд процентиля фандинга", () => {
     const candles = bars(3, at - HOUR, HOUR); // бары: at-1ч, at, at+1ч
     const pct = fundingPercentile(candles, "XT", 3);
 
-    // до выплаты в окне только одинаковые ставки
-    expect(pct[0]).toBe(100);
+    // до выплаты окно ПЛОСКОЕ — средний ранг ставит его на 50, а не на 100
+    expect(pct[0]).toBe(50);
     // бар РОВНО в момент выплаты её ещё не видит — иначе это знание будущего
     expect(pct[1]).toBe(pct[0]);
     // и только следующий бар видит: низкая ставка становится минимумом окна
-    expect(pct[2]).toBeCloseTo(100 / 3, 6);
+    expect(pct[2]).toBeCloseTo(100 / 6, 6);
     expect(pct[2]).toBeLessThan(pct[1]);
   });
 
@@ -83,12 +83,13 @@ describe("ряд процентиля фандинга", () => {
     ]);
     writeFunding("XT", rates);
     const candles = bars(1, T0 + 4 * EIGHT_HOURS + HOUR);
-    expect(fundingPercentile(candles, "XT", 5)[0]).toBe(100);
+    // максимум окна из 5: 4 ниже + половина самого себя = 90
+    expect(fundingPercentile(candles, "XT", 5)[0]).toBe(90);
 
     // А если последняя ставка минимальна — только она сама, 1 из 5 → 20.
     clearFundingCache();
     writeFunding("XT2", [4, 3, 2, 1, 0].map((v, i) => [T0 + i * EIGHT_HOURS, v]));
-    expect(fundingPercentile(candles, "XT2", 5)[0]).toBe(20);
+    expect(fundingPercentile(candles, "XT2", 5)[0]).toBe(10);
   });
 
   it("пока окно не заполнено — NaN, а не ноль", () => {
@@ -117,8 +118,8 @@ describe("атом фандинга", () => {
     const ctx = new EvaluationContext(candles, "XT");
 
     // последняя ставка максимальна в окне → верхний хвост
-    expect(ctx.evaluateAtom({ kind: "funding", direction: "above", percentile: 90, windowDays: 1 }, 0)).toBe(true);
-    expect(ctx.evaluateAtom({ kind: "funding", direction: "below", percentile: 90, windowDays: 1 }, 0)).toBe(false);
+    expect(ctx.evaluateAtom({ kind: "funding", direction: "above", percentile: 80, windowDays: 1 }, 0)).toBe(true);
+    expect(ctx.evaluateAtom({ kind: "funding", direction: "below", percentile: 80, windowDays: 1 }, 0)).toBe(false);
   });
 
   it("без символа в контексте условие ложно, а не истинно", () => {
@@ -127,7 +128,7 @@ describe("атом фандинга", () => {
     writeFunding("XT", highRates());
     const candles = bars(1, T0 + 9 * EIGHT_HOURS + HOUR);
     const ctx = new EvaluationContext(candles);
-    expect(ctx.evaluateAtom({ kind: "funding", direction: "above", percentile: 90, windowDays: 1 }, 0)).toBe(false);
+    expect(ctx.evaluateAtom({ kind: "funding", direction: "above", percentile: 80, windowDays: 1 }, 0)).toBe(false);
   });
 
   it("движок доносит символ до атома — иначе семейство молча не торгует", () => {

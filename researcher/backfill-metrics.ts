@@ -28,7 +28,6 @@ import { join } from "node:path";
 import { listUniverse } from "./corpus.ts";
 
 const LIST = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision";
-const BULK = "https://data.binance.vision/data/futures/um/daily/metrics";
 
 /** Выходные колонки. Имена Binance (count_/sum_) — артефакты их выгрузки:
  * count_toptrader_* — соотношение по АККАУНТАМ топ-трейдеров,

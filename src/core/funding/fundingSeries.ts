@@ -83,11 +83,17 @@ export function fundingPercentile(
   const ranks = new Float64Array(times.length).fill(NaN);
   for (let s = windowSamples - 1; s < times.length; s++) {
     const current = rates[s];
-    let atOrBelow = 0;
+    let below = 0;
+    let equal = 0;
     for (let k = s - windowSamples + 1; k <= s; k++) {
-      if (rates[k] <= current) atOrBelow++;
+      if (rates[k] < current) below++;
+      else if (rates[k] === current) equal++;
     }
-    ranks[s] = (atOrBelow / windowSamples) * 100;
+    // Средний ранг при равенствах — не косметика. У многих монет ставка
+    // подолгу прижата к константе 0.0001; наивное «доля ≤ текущего» давало
+    // такому плоскому окну ранг 100, и «экстремальный фандинг» горел на
+    // символах, где НИЧЕГО не происходит. Средний ранг ставит их на 50.
+    ranks[s] = ((below + equal / 2) / windowSamples) * 100;
   }
 
   // Оба ряда отсортированы по времени — сводим их одним проходом.

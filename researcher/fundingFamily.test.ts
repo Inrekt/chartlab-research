@@ -69,5 +69,6 @@ describe("источник ставок подключён", () => {
     // молча перестанет давать сделки, не сломав ни одного другого теста.
     const source = await readFile(new URL("./corpus.ts", import.meta.url), "utf8");
     expect(source).toContain("useCsvFunding");
+    expect(source).toContain("useCsvMetrics");
   });
 });
