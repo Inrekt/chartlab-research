@@ -72,6 +72,7 @@ import {
 import { CorrelationClusterer, weeklyFingerprint } from "./clustering.ts";
 import { TrialLedger } from "./ledger.ts";
 import { behavioralExclusionFor, GATE_VERSION, markEpoch } from "./epochs.ts";
+import { classifyDeath, depthScore } from "./gatePolicy.ts";
 
 export const STAGE_A_SYMBOLS = 16;
 export const STAGE_B_SYMBOLS = 128;
@@ -242,8 +243,25 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   clearCandleCache();
   const ledger = new TrialLedger(opts.dbPath);
   const rejectedByGate: Record<string, number> = {};
-  const reject = (id: string, gate: string, reason: string) => {
+  /**
+   * Вскрытие (пункт 4 фазы 1): каждая смерть получает depth-score (доля
+   * ОБУЧАЕМЫХ ворот, пройденных до гибели) и класс причины. Пишется здесь,
+   * одним местом, — какие бы ворота ни убили; extra уточняет класс у
+   * халвингов (сигнала нет / экономика съела / сделок мало).
+   */
+  const reject = (
+    id: string,
+    gate: string,
+    reason: string,
+    extra?: Parameters<typeof classifyDeath>[1],
+  ) => {
     rejectedByGate[gate] = (rejectedByGate[gate] ?? 0) + 1;
+    ledger.recordEval(id, "post_mortem", {
+      gate,
+      cause: classifyDeath(gate, extra),
+      depth: depthScore(gate),
+      gateVersion: GATE_VERSION,
+    });
     ledger.transition(id, "REJECTED", reason);
   };
 
@@ -345,9 +363,9 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
       gateVersion: GATE_VERSION,
     });
     if (trades.length < STAGE_A_MIN_TRADES) {
-      reject(id, "halving_16", `халвинг-16: лишь ${trades.length} сделок`);
+      reject(id, "halving_16", `халвинг-16: лишь ${trades.length} сделок`, { trades: trades.length, minTrades: STAGE_A_MIN_TRADES });
     } else if (net <= 0) {
-      reject(id, "halving_16", `халвинг-16: матожидание ${net.toFixed(3)}R ≤ 0 после издержек`);
+      reject(id, "halving_16", `халвинг-16: матожидание ${net.toFixed(3)}R ≤ 0 после издержек`, { grossExpectancy: tradeEconomics(trades).grossExpectancy, netExpectancy: net });
     } else {
       survivorsA.push(spec);
     }
@@ -455,9 +473,9 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
       gateVersion: GATE_VERSION,
     });
     if (trades.length < STAGE_B_MIN_TRADES) {
-      reject(id, "halving_128", `халвинг-128: лишь ${trades.length} сделок`);
+      reject(id, "halving_128", `халвинг-128: лишь ${trades.length} сделок`, { trades: trades.length, minTrades: STAGE_B_MIN_TRADES });
     } else if (net <= 0) {
-      reject(id, "halving_128", `халвинг-128: матожидание ≤ 0 после издержек`);
+      reject(id, "halving_128", `халвинг-128: матожидание ≤ 0 после издержек`, { grossExpectancy: tradeEconomics(trades).grossExpectancy, netExpectancy: net });
     } else if (positiveShare < STAGE_B_MIN_POSITIVE_SHARE) {
       reject(id, "halving_128", `халвинг-128: прибыльна лишь на ${(positiveShare * 100).toFixed(0)}% символов`);
     } else {
