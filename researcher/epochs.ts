@@ -38,7 +38,13 @@ import { behavioralId, type CandidateSpec, type SignalTf } from "./grammar.ts";
  *     портфелю), допуск плато 0.05R, δ-вход инкубатора 0.18 (2026-07-31,
  *     пре-регистрация docs/gates-v3-preregistration.md).
  */
-export const GATE_VERSION = 3;
+/**
+ * v4 (2026-08-07): средний ранг в процентилях фандинга/тейкеров (наивный ранг
+ * объявлял экстремумом плоские окна), срез вселенной по ликвидности для
+ * mean_reversion (неликвид) и momentum (ликвид), экономика испытания в журнале
+ * (grossExpectancy / costR / breakevenCostR / tradesPerDay).
+ */
+export const GATE_VERSION = 4;
 
 /** Порядок ТФ внутри ночи эпохи-1 — дословно дефолт RESEARCHER_TFS. */
 const EPOCH1_NIGHT_TFS: readonly SignalTf[] = ["1h", "4h"];

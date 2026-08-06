@@ -105,6 +105,55 @@ export const OOT_CUTOFF_SEC = Math.floor(Date.parse(OOT_CUTOFF_ISO) / 1000);
  */
 export const OOT_WARMUP_BARS = 600;
 
+
+export type LiquidityTier = "liquid" | "illiquid";
+
+const tierCache = new Map<string, Map<string, LiquidityTier>>();
+
+/**
+ * Срез вселенной по ликвидности: верхняя половина по среднему НОТИОНАЛУ
+ * (volume × close) за последние 180 дней in-окна — «ликвидные», нижняя —
+ * «неликвидные».
+ *
+ * Зачем: кросс-секционный разворот в крипте живёт в НЕликвидных монетах, а
+ * моментум — в ликвидных (IRFA, 3600+ монет); усреднение по всей вселенной
+ * гасит оба эффекта. Пункт 3 фазы 1, ранжирование критика №4.
+ *
+ * Нотионал, а не сырой объём: объём в штуках монеты несравним между BTC и
+ * мем-коином. Считается по in-окну — OOT-год в определение среза не
+ * подглядывает.
+ */
+export function liquidityTiers(
+  tf: SignalTf,
+  symbols: readonly string[],
+  historyDir = HISTORY_DIR,
+): Map<string, LiquidityTier> {
+  const key = `${historyDir}|${tf}|${symbols.length}`;
+  const cached = tierCache.get(key);
+  if (cached) return cached;
+
+  const barsPerDay = tf === "1d" ? 1 : Math.round(86400 / (tf === "1h" ? 3600 : 14400));
+  const notional = new Map<string, number>();
+  for (const symbol of symbols) {
+    const candles = loadCandlesWindow(symbol, tf, "in", historyDir);
+    if (!candles || candles.length === 0) {
+      notional.set(symbol, 0);
+      continue;
+    }
+    const tail = candles.slice(-180 * barsPerDay);
+    let sum = 0;
+    for (const bar of tail) sum += bar.volume * bar.close;
+    notional.set(symbol, sum / tail.length);
+  }
+
+  const sorted = [...notional.entries()].sort((a, b) => b[1] - a[1]);
+  const half = Math.ceil(sorted.length / 2);
+  const tiers = new Map<string, LiquidityTier>();
+  sorted.forEach(([symbol], i) => tiers.set(symbol, i < half ? "liquid" : "illiquid"));
+  tierCache.set(key, tiers);
+  return tiers;
+}
+
 export type CorpusWindow = "in" | "oot" | "all";
 
 /**

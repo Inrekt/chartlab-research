@@ -24,19 +24,22 @@ import { pathToFileURL } from "node:url";
 import { DB_PATH } from "./paths.ts";
 import type { TradeResult } from "../src/core/types/index.ts";
 import { runBacktest } from "../src/core/backtest/engine.ts";
-import { statsAfterCosts, tradeCostInR } from "../src/core/committee/costModel.ts";
+import { averageCostInR, statsAfterCosts, tradeCostInR } from "../src/core/committee/costModel.ts";
 import {
   candidateId,
   EXITS,
   isLiquidityExit,
   LIQUIDITY_EXITS,
   setupNeighbors,
+  setupTier,
   sampleCandidates,
   toStrategyConfig,
   type CandidateSpec,
   type SignalTf,
 } from "./grammar.ts";
 import {
+  liquidityTiers,
+  type LiquidityTier,
   clearCandleCache,
   halvingSubset,
   listUniverse,
@@ -139,6 +142,42 @@ export function perSymbolNets(trades: readonly TradeResult[]): SymbolNet[] {
   }));
 }
 
+/**
+ * Экономика испытания для журнала (пункт 3 фазы 1, ранжирование критика №4).
+ *
+ * breakevenCostR — издержки в R, при которых ожидание обнуляется (= валовое
+ * ожидание): по нему near-miss анализ отличает «сигнала нет» от «сигнал есть,
+ * экономики нет» — вторые зоны живые, чинятся горизонтом, а не порогами.
+ * tradesPerDay — оборот; высокооборотные семейства умирают об издержки
+ * раньше, чем сигнал успевает заплатить (урок пост-мортема Fayez 2026:
+ * IC +0.024 при чистом Шарпе −2.91).
+ */
+export function tradeEconomics(trades: readonly TradeResult[]): {
+  grossExpectancy: number;
+  costR: number;
+  breakevenCostR: number;
+  tradesPerDay: number;
+} {
+  if (trades.length === 0) {
+    return { grossExpectancy: 0, costR: 0, breakevenCostR: 0, tradesPerDay: 0 };
+  }
+  const gross = trades.reduce((sum, t) => sum + t.rMultiple, 0) / trades.length;
+  const costR = averageCostInR([...trades]);
+  let first = Infinity;
+  let last = -Infinity;
+  for (const t of trades) {
+    if (t.entryTime < first) first = t.entryTime;
+    if (t.entryTime > last) last = t.entryTime;
+  }
+  const spanDays = Math.max(1, (last - first) / 86400);
+  return {
+    grossExpectancy: gross,
+    costR,
+    breakevenCostR: gross,
+    tradesPerDay: trades.length / spanDays,
+  };
+}
+
 export function netRMultiples(trades: readonly TradeResult[]): number[] {
   return trades.map((t) => t.rMultiple - tradeCostInR(t));
 }
@@ -210,11 +249,60 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
 
   const universe = listUniverse(opts.tf);
   const { search, holdout } = splitHoldout(universe);
-  const stageASymbols = halvingSubset(search, STAGE_A_SYMBOLS, HALVING_SALT);
-  const stageBSymbols = halvingSubset(search, STAGE_B_SYMBOLS, HALVING_SALT);
-  /** Для окна out-of-time вселенная полная: отложенные символы там уже не
-   * «отложены» — время само делает срез честным, символы прятать не от кого. */
-  const ootSymbols = [...search, ...holdout];
+  /**
+   * Срез по ликвидности (пункт 3 фазы 1): семейства с universeTier живут на
+   * своей половине вселенной — разворот на неликвидной, моментум на ликвидной.
+   * Половины считаются по нотионалу in-окна ОДИН раз на вселенную; halvingSubset
+   * поверх отфильтрованного пула сохраняет свойство «стадия-16 — префикс
+   * стадии-128» внутри каждого среза.
+   */
+  const tiers = liquidityTiers(opts.tf, universe);
+  const poolOf = (list: readonly string[], tier: LiquidityTier | undefined): string[] =>
+    tier ? list.filter((symbol) => tiers.get(symbol) === tier) : [...list];
+  /**
+   * Стадийные списки на срез. Префиксное свойство «стадия-16 ⊂ стадия-128 ⊂
+   * весь пул» обязано выполняться ВНУТРИ каждого среза — halvingSubset поверх
+   * отфильтрованного пула это даёт (сортировка по хэшу устойчива к фильтру).
+   */
+  const stageListsFor = (tier: LiquidityTier | undefined) => {
+    const pool = poolOf(search, tier);
+    return {
+      pool,
+      a: halvingSubset(pool, STAGE_A_SYMBOLS, HALVING_SALT),
+      b: halvingSubset(pool, STAGE_B_SYMBOLS, HALVING_SALT),
+      holdout: poolOf(holdout, tier),
+      oot: poolOf([...search, ...holdout], tier),
+    };
+  };
+  const tierLists = {
+    all: stageListsFor(undefined),
+    liquid: stageListsFor("liquid"),
+    illiquid: stageListsFor("illiquid"),
+  } as const;
+  type TierLists = (typeof tierLists)["all"];
+  const runStageTiered = (
+    list: readonly CandidateSpec[],
+    pick: (lists: TierLists) => readonly string[],
+    window: CorpusWindow = "in",
+    stageLog?: (m: string) => void,
+  ): Map<string, TradeResult[]> => {
+    const groups = new Map<keyof typeof tierLists, CandidateSpec[]>();
+    for (const spec of list) {
+      const key = (setupTier(spec.setup) ?? "all") as keyof typeof tierLists;
+      const group = groups.get(key);
+      if (group) group.push(spec);
+      else groups.set(key, [spec]);
+    }
+    const out = new Map<string, TradeResult[]>();
+    for (const [key, group] of groups) {
+      const symbols = pick(tierLists[key]);
+      for (const [id, trades] of runStage(group, symbols, opts.tf, stageLog, window)) {
+        out.set(id, trades);
+      }
+    }
+    return out;
+  };
+  const stageASymbols = tierLists.all.a;
 
   // Эпоха-2: кандидат несёт РЕАЛЬНЫЙ ТФ ночи, а повторы блокируются по
   // поведению (правило × корпус), а не по ярлыку — см. epochs.ts.
@@ -231,7 +319,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
 
   // ── Стадия 16 символов ────────────────────────────────────────────────────
   log(`Стадия 1/3: ${specs.length} кандидатов × ${stageASymbols.length} символов…`);
-  const tradesA = runStage(specs, stageASymbols, opts.tf);
+  const tradesA = runStageTiered(specs, (l) => l.a);
   const stageASharpes: number[] = [];
   const stageATradeCounts: number[] = [];
   const survivorsA: CandidateSpec[] = [];
@@ -250,6 +338,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     ledger.recordEval(id, "halving_16", {
       trades: trades.length,
       netExpectancy: net,
+      ...tradeEconomics(trades),
       runTf: opts.tf,
       seed: opts.seed,
       batchId,
@@ -344,8 +433,8 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   }
 
   // ── Стадия 128 символов (дозапуск только новых символов) ──────────────────
-  log(`Стадия 2/3: ${survivorsA.length} кандидатов × ${stageBSymbols.length} символов…`);
-  const extraB = runStage(survivorsA, stageBSymbols.slice(STAGE_A_SYMBOLS), opts.tf, log);
+  log(`Стадия 2/3: ${survivorsA.length} кандидатов × до ${STAGE_B_SYMBOLS} символов…`);
+  const extraB = runStageTiered(survivorsA, (l) => l.b.slice(l.a.length), "in", log);
   const survivorsB: CandidateSpec[] = [];
   const tradesB = new Map<string, TradeResult[]>();
   for (const spec of survivorsA) {
@@ -361,6 +450,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
       trades: trades.length,
       netExpectancy: net,
       positiveShare,
+      ...tradeEconomics(trades),
       runTf: opts.tf,
       gateVersion: GATE_VERSION,
     });
@@ -379,8 +469,8 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
 
   // ── Полный гаунтлет ───────────────────────────────────────────────────────
   log(`Стадия 3/3 (гаунтлет): ${survivorsB.length} кандидатов…`);
-  const extraFull = runStage(survivorsB, search.slice(STAGE_B_SYMBOLS), opts.tf);
-  const holdoutTrades = runStage(survivorsB, holdout, opts.tf);
+  const extraFull = runStageTiered(survivorsB, (l) => l.pool.slice(l.b.length));
+  const holdoutTrades = runStageTiered(survivorsB, (l) => l.holdout);
 
   interface Finalist {
     spec: CandidateSpec;
@@ -418,7 +508,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   // G4: плато — соседи по сетке выходов на символах стадии-16.
   finalists = finalists.filter((f) => {
     const neighbors = neighborSpecs(f.spec);
-    const neighborTrades = runStage(neighbors, stageASymbols, opts.tf);
+    const neighborTrades = runStageTiered(neighbors, (l) => l.a);
     const nets = neighbors.map((n) => statsAfterCosts(neighborTrades.get(candidateId(n))!).expectancy);
     const own = statsAfterCosts(tradesA.get(f.id)!).expectancy;
     return applyGate("gate_plateau", f, gatePlateau(own, nets));
@@ -489,7 +579,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     // по всей вселенной здесь дёшев. Тест тот же (разностный, с сохранением
     // расписания), порог ниже: на годе данных наблюдений в пять раз меньше,
     // и t≥2.6 убивал бы 3/4 настоящих краёв (calibrate.ts --mode oot).
-    const ootRaw = runStage([f.spec], ootSymbols, opts.tf, undefined, "oot").get(f.id) ?? [];
+    const ootRaw = runStageTiered([f.spec], (l) => l.oot, "oot").get(f.id) ?? [];
     const ootTrades = ootRaw.filter((t) => t.entryTime >= OOT_CUTOFF_SEC);
     const ootBySymbol = new Map<string, TradeResult[]>();
     for (const t of ootTrades) {

@@ -185,6 +185,13 @@ export const FILTERS: readonly FilterDef[] = [
 const FILTERS_BY_ID = new Map(FILTERS.map((f) => [f.id, f]));
 
 export interface SetupDef {
+  /**
+   * На какой половине вселенной по ликвидности живёт семейство.
+   * Разворот — только неликвидная половина, моментум — только ликвидная
+   * (IRFA: усреднение по всем монетам гасит оба эффекта). Отсутствие поля —
+   * вся вселенная.
+   */
+  universeTier?: "liquid" | "illiquid";
   id: string;
   /** Семейство сетапа — ключ приоров выборки и кластеров журнала. */
   family: string;
@@ -326,6 +333,8 @@ const BASE_SETUPS: readonly SetupDef[] = [
   {
     id: "momentum_roc_zero",
     family: "momentum",
+    // Срез по ликвидности — пункт 3 фазы 1 (IRFA): см. universeTier в SetupDef.
+    universeTier: "liquid",
     prior: 3,
     build: (d) => [
       {
@@ -339,6 +348,8 @@ const BASE_SETUPS: readonly SetupDef[] = [
   {
     id: "momentum_macd_zero",
     family: "momentum",
+    // Срез по ликвидности — пункт 3 фазы 1 (IRFA): см. universeTier в SetupDef.
+    universeTier: "liquid",
     prior: 3,
     build: (d) => [
       {
@@ -353,6 +364,8 @@ const BASE_SETUPS: readonly SetupDef[] = [
   {
     id: "momentum_macd_signal",
     family: "momentum",
+    // Срез по ликвидности — пункт 3 фазы 1 (IRFA): см. universeTier в SetupDef.
+    universeTier: "liquid",
     prior: 3,
     build: (d) => [
       {
@@ -396,6 +409,8 @@ const BASE_SETUPS: readonly SetupDef[] = [
   {
     id: "meanrev_keltner_20",
     family: "mean_reversion",
+    // Срез по ликвидности — пункт 3 фазы 1 (IRFA): см. universeTier в SetupDef.
+    universeTier: "illiquid",
     prior: 2,
     build: (d) => [
       {
@@ -409,6 +424,8 @@ const BASE_SETUPS: readonly SetupDef[] = [
   {
     id: "meanrev_bollinger_20",
     family: "mean_reversion",
+    // Срез по ликвидности — пункт 3 фазы 1 (IRFA): см. universeTier в SetupDef.
+    universeTier: "illiquid",
     prior: 2,
     build: (d) => [
       {
@@ -740,6 +757,11 @@ export function behavioralId(spec: CandidateSpec): string {
  * по доходностям): семейство × ТФ × направление. */
 export function defaultClusterKey(spec: CandidateSpec): string {
   return `${setupFamily(spec.setup)}:${spec.timeframe}:${spec.direction}`;
+}
+
+/** Срез вселенной для сетапа; undefined — вся вселенная. */
+export function setupTier(setupId: string): "liquid" | "illiquid" | undefined {
+  return SETUPS_BY_ID.get(setupId)?.universeTier;
 }
 
 export function setupFamily(setupId: string): string {
