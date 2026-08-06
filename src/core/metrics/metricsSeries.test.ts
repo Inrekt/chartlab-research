@@ -151,3 +151,59 @@ describe("атом takerFlow", () => {
     ).toBe(false);
   });
 });
+
+describe("CVD-дивергенция", () => {
+  /** Свечи с управляемыми максимумами; минимумы и объём фиксированы. */
+  function candlesHL(highs: number[]): Candle[] {
+    return highs.map((high, i) => ({
+      time: T0 + i * HOUR,
+      open: 100,
+      high,
+      low: 90,
+      close: 100,
+      volume: 10,
+    }));
+  }
+
+  it("медвежья: цена ставит новый максимум, накопленная дельта — нет", () => {
+    // Пивоты максимумов на барах 4 (high 110) и 10 (high 115, выше). До
+    // первого пика агрессивно покупают (ratio 3), после — продают (ratio 1/3):
+    // CVD на втором пике НИЖЕ, чем на первом. Классическая медвежья картина:
+    // цену тянут выше, а агрессивный спрос уже кончился.
+    const highs = [100, 101, 102, 103, 110, 103, 102, 101, 102, 103, 115, 103, 102, 101, 100];
+    const ratios: Array<[number, number]> = highs.map((_, h) => [h, h <= 4 ? 3.0 : 1 / 3]);
+    setRatios("XT", ratios);
+    const candles = candlesHL(highs);
+    const ctx = new EvaluationContext(candles, "XT");
+
+    const atom = { kind: "divergence", osc: "cvd", direction: "bearish", lookback: 12 } as const;
+    // бар подтверждения второго пивота = 10 + 2
+    expect(ctx.evaluateAtom(atom, 12)).toBe(true);
+    // на соседних барах сигнал не горит повторно
+    expect(ctx.evaluateAtom(atom, 11)).toBe(false);
+    expect(ctx.evaluateAtom(atom, 13)).toBe(false);
+  });
+
+  it("дивергенции нет, когда дельта подтверждает новый максимум", () => {
+    // Тот же ценовой рисунок, но покупают ВСЮ дорогу — CVD на втором пике выше.
+    const highs = [100, 101, 102, 103, 110, 103, 102, 101, 102, 103, 115, 103, 102, 101, 100];
+    setRatios("XT", highs.map((_, h) => [h, 3.0]));
+    const ctx = new EvaluationContext(candlesHL(highs), "XT");
+    expect(
+      ctx.evaluateAtom({ kind: "divergence", osc: "cvd", direction: "bearish", lookback: 12 }, 12),
+    ).toBe(false);
+  });
+
+  it("без символа CVD-дивергенция ложна, rsi-путь не задет", () => {
+    const highs = [100, 101, 102, 103, 110, 103, 102, 101, 102, 103, 115, 103, 102, 101, 100];
+    setRatios("XT", highs.map((_, h) => [h, 3.0]));
+    const noSymbol = new EvaluationContext(candlesHL(highs));
+    expect(
+      noSymbol.evaluateAtom({ kind: "divergence", osc: "cvd", direction: "bearish", lookback: 12 }, 12),
+    ).toBe(false);
+    // rsi-дивергенция без символа обязана работать как раньше (не бросать)
+    expect(() =>
+      noSymbol.evaluateAtom({ kind: "divergence", osc: "rsi", direction: "bearish", lookback: 12 }, 12),
+    ).not.toThrow();
+  });
+});

@@ -96,7 +96,7 @@ export type ConditionAtom =
    * без заглядывания вперёд). Срабатывает ТОЛЬКО на баре подтверждения второго
    * пивота, чтобы сигнал не «горел» много баров подряд.
    */
-  | { kind: "divergence"; osc: "rsi" | "macd"; direction: "bullish" | "bearish"; lookback: number; period?: number }
+  | { kind: "divergence"; osc: "rsi" | "macd" | "cvd"; direction: "bullish" | "bearish"; lookback: number; period?: number }
   /**
    * Растянутость цены от средней, В ATR — «уже переоценено жёстко».
    * Именно в ATR, а не в процентах: 5% для BTC и для мем-коина это разные

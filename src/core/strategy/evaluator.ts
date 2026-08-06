@@ -1,7 +1,7 @@
 import type { Candle, ConditionAtom, ConditionGroup, IndicatorRef } from "../types";
 import { cachedLiquidityFeatures } from "../liquidations/clusterSeries";
 import { cachedFundingPercentile, FUNDING_PAYOUTS_PER_DAY } from "../funding/fundingSeries";
-import { cachedTakerPercentile } from "../metrics/metricsSeries";
+import { cachedTakerPercentile, takerImbalance } from "../metrics/metricsSeries";
 import {
   adx,
   atr as atrIndicator,
@@ -332,6 +332,11 @@ export class EvaluationContext {
     }
 
     if (atom.kind === "divergence") {
+      // CVD — не индикатор цены, а внешний ряд: без символа его не построить.
+      if (atom.osc === "cvd") {
+        if (!this.symbol) return false;
+        return matchesDivergence(this.candles, this.cvdSeries(this.symbol), index, atom);
+      }
       // ref мемоизирован на атом: свежий объект на каждый бар пробивал бы
       // WeakMap-ключ и возвращал JSON.stringify в горячий путь.
       let oscRef = divergenceRefCache.get(atom);
@@ -369,6 +374,29 @@ export class EvaluationContext {
     }
 
     return false;
+  }
+
+  /**
+   * Кумулятивная дельта тейкеров: cvd_t = Σ volume_i × imb_i. Объём из свечи,
+   * дисбаланс из почасовых метрик. Бары без метрик дают null (не могут быть
+   * пивотами дивергенции), накопление продолжается по конечным дельтам —
+   * редкая дырка в час не обнуляет весь ряд.
+   */
+  private cvdSeries(symbol: string): (number | null)[] {
+    const key = `cvd:${symbol}`;
+    let series = this.cache.get(key);
+    if (!series) {
+      const imb = takerImbalance(this.candles, symbol);
+      series = new Array<number | null>(this.candles.length).fill(null);
+      let sum = 0;
+      for (let i = 0; i < imb.length; i++) {
+        if (!Number.isFinite(imb[i])) continue;
+        sum += this.candles[i].volume * imb[i];
+        series[i] = sum;
+      }
+      this.cache.set(key, series);
+    }
+    return series;
   }
 
   evaluateGroup(group: ConditionGroup, index: number): boolean {
