@@ -19,7 +19,7 @@ describe("файрвол ворот", () => {
         (m) => m[1],
       ),
     );
-    const classified = new Set([...LEARNABLE_GATES, ...UNTOUCHABLE_GATES]);
+    const classified = new Set<string>([...LEARNABLE_GATES, ...UNTOUCHABLE_GATES]);
     for (const gate of used) {
       expect(classified.has(gate), `ворота "${gate}" не классифицированы`).toBe(true);
     }
