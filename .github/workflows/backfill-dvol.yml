@@ -1,0 +1,47 @@
+# Одноразовый (запуск руками) бэкфилл часовой истории DVOL с 2021-03-24.
+# Живёт в облаке, потому что с локальной сети владельца Deribit не отвечает,
+# а с раннеров GitHub ежедневный сборщик ходит к нему штатно. Идемпотентен —
+# оборвался, запустили ещё раз, дозаберёт хвост.
+name: Backfill DVOL hourly
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: research-data
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Inrekt/chartlab-research-data
+          ssh-key: ${{ secrets.DATA_DEPLOY_KEY }}
+          path: data
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Backfill
+        env:
+          COLLECT_DIR: ${{ github.workspace }}/data/market
+        run: npx tsx researcher/backfill-dvol.ts
+      - name: Commit data
+        working-directory: data
+        run: |
+          git config user.name "chartlab-collector"
+          git config user.email "collector@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo "нет новых данных"; exit 0; }
+          git commit -m "market: dvol hourly backfill $(date -u +%F)"
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push && break
+            sleep 5
+          done
