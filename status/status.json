@@ -1,22 +1,22 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-07T21:51:03.131Z",
+  "generatedAt": "2026-08-07T22:10:51.802Z",
   "run": {
-    "durationMin": 23,
+    "durationMin": 0,
     "nextNightUtc": "2026-08-08T21:37:00.000Z",
-    "lastTickUtc": "2026-08-07T21:51:03.131Z"
+    "lastTickUtc": "2026-08-07T22:10:51.802Z"
   },
   "ledger": {
-    "trials": 56370,
+    "trials": 56374,
     "clusters": 9640,
     "census": {
-      "REJECTED": 56370
+      "REJECTED": 56374
     }
   },
   "universes": [
     {
       "tf": "1h",
-      "batch": 2000,
+      "batch": 2,
       "symbols": {
         "search": 128,
         "holdout": 42
@@ -24,15 +24,15 @@
       "funnel": [
         {
           "stage": "batch",
-          "n": 2000
+          "n": 2
         },
         {
           "stage": "halving_16",
-          "n": 166
+          "n": 0
         },
         {
           "stage": "halving_128",
-          "n": 72
+          "n": 0
         },
         {
           "stage": "gauntlet",
@@ -40,20 +40,14 @@
         }
       ],
       "rejectedByGate": {
-        "halving_16": 1834,
-        "halving_128": 94,
-        "gate_breadth": 55,
-        "gate_cost_stress": 10,
-        "gate_plateau": 2,
-        "gate_null": 3,
-        "gate_dsr": 2
+        "halving_16": 2
       },
-      "realityCheckP": 0.916,
-      "pbo": 0.31277056277056275
+      "realityCheckP": null,
+      "pbo": null
     },
     {
       "tf": "4h",
-      "batch": 2000,
+      "batch": 2,
       "symbols": {
         "search": 128,
         "holdout": 42
@@ -61,15 +55,15 @@
       "funnel": [
         {
           "stage": "batch",
-          "n": 2000
+          "n": 2
         },
         {
           "stage": "halving_16",
-          "n": 978
+          "n": 0
         },
         {
           "stage": "halving_128",
-          "n": 806
+          "n": 0
         },
         {
           "stage": "gauntlet",
@@ -77,23 +71,39 @@
         }
       ],
       "rejectedByGate": {
-        "halving_16": 1022,
-        "halving_128": 172,
-        "gate_breadth": 374,
-        "gate_cost_stress": 30,
-        "gate_activity": 32,
-        "gate_plateau": 31,
-        "gate_null": 221,
-        "gate_dsr": 93,
-        "gate_temporal": 25
+        "halving_16": 2
       },
-      "realityCheckP": 0.194,
-      "pbo": 0.18398268398268397
+      "realityCheckP": null,
+      "pbo": null
     }
   ],
   "incubating": [],
   "graduates": [],
   "recentJournal": [
+    {
+      "at": "2026-08-07T22:10:51.540Z",
+      "state": "REJECTED",
+      "ref": "прочее · 4h · short",
+      "reason": "халвинг-16: лишь 0 сделок"
+    },
+    {
+      "at": "2026-08-07T22:10:51.538Z",
+      "state": "REJECTED",
+      "ref": "прочее · 4h · long",
+      "reason": "халвинг-16: лишь 0 сделок"
+    },
+    {
+      "at": "2026-08-07T22:10:49.919Z",
+      "state": "REJECTED",
+      "ref": "прочее · 1h · short",
+      "reason": "халвинг-16: лишь 0 сделок"
+    },
+    {
+      "at": "2026-08-07T22:10:49.916Z",
+      "state": "REJECTED",
+      "ref": "прочее · 1h · short",
+      "reason": "халвинг-16: лишь 0 сделок"
+    },
     {
       "at": "2026-08-07T01:27:48.006Z",
       "state": "REJECTED",
@@ -309,36 +319,12 @@
       "state": "REJECTED",
       "ref": "пробой · 4h · short",
       "reason": "время: walk-forward вердикт «unstable»"
-    },
-    {
-      "at": "2026-08-07T01:27:47.849Z",
-      "state": "REJECTED",
-      "ref": "тренд · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.277 (N=9640)"
-    },
-    {
-      "at": "2026-08-07T01:27:47.844Z",
-      "state": "REJECTED",
-      "ref": "паттерн · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.277 (N=9640)"
-    },
-    {
-      "at": "2026-08-07T01:27:47.839Z",
-      "state": "REJECTED",
-      "ref": "импульс · 4h · short",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.277 (N=9640)"
-    },
-    {
-      "at": "2026-08-07T01:27:47.837Z",
-      "state": "REJECTED",
-      "ref": "сезонность · 4h · long",
-      "reason": "DSR: 0.000 < 0.95 при планке E[max]=0.277 (N=9640)"
     }
   ],
   "history": [
     {
       "date": "2026-08-07",
-      "batch": 4000,
+      "batch": 4,
       "validated": 0,
       "graduated": 0
     },
