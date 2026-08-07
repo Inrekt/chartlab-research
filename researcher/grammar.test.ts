@@ -76,14 +76,23 @@ describe("sampling", () => {
     for (const spec of second) expect(ids.has(candidateId(spec))).toBe(false);
   });
 
-  test("evidence priors: momentum-family setups sampled far more than seasonality", () => {
+  test("политика бюджета: слепой перебор не получает НОВЫХ кандидатов", () => {
+    // Тест заменил прежний «моментум чаще сезонности»: та проверка пиновала
+    // выборку по литературным приорам, которую политика бюджета (пункт 6
+    // фазы 1) сознательно отменила после диагноза 0/44000. Теперь бюджет
+    // получают только семейства с платящей стороной; у ликвидити-магнита
+    // приор выше, чем у фандинговых, — это и проверяем.
     const batch = sampleCandidates(1, 2000);
     const byFamily = new Map<string, number>();
     for (const spec of batch) {
       const family = SETUPS.find((s) => s.id === spec.setup)!.family;
       byFamily.set(family, (byFamily.get(family) ?? 0) + 1);
     }
-    expect(byFamily.get("momentum") ?? 0).toBeGreaterThan(3 * (byFamily.get("seasonality") ?? 0));
+    expect(byFamily.get("momentum") ?? 0).toBe(0);
+    expect(byFamily.get("trend_following") ?? 0).toBe(0);
+    expect(byFamily.get("liquidity_magnet") ?? 0).toBeGreaterThan(
+      byFamily.get("funding_pressure") ?? 0,
+    );
   });
 });
 

@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { halvingSubset, liquidityTiers } from "./corpus.ts";
-import { setupTier } from "./grammar.ts";
+import { enumerateAll, frozenFamilies, sampleCandidates, setupFamily, setupTier } from "./grammar.ts";
 import { tradeEconomics } from "./screen.ts";
 import type { TradeResult } from "../src/core/types/index.ts";
 
@@ -89,5 +89,26 @@ describe("экономика испытания", () => {
     const eco = tradeEconomics([]);
     expect(eco.tradesPerDay).toBe(0);
     expect(eco.grossExpectancy).toBe(0);
+  });
+});
+
+describe("политика бюджета (пункт 6)", () => {
+  it("новые кандидаты — только семействам с платящей стороной", () => {
+    const specs = sampleCandidates(123, 300, undefined, { tf: "4h" });
+    expect(specs.length).toBeGreaterThan(0);
+    const families = new Set(specs.map((s) => setupFamily(s.setup)));
+    for (const f of families) {
+      expect(["liquidity_magnet", "funding_pressure", "funding_hours"]).toContain(f);
+    }
+  });
+
+  it("слепой перебор заморожен, но ПРОСТРАНСТВО не сужено", () => {
+    // Дедуп и дефляция продолжают считать всё пространство: enumerateAll
+    // обязан по-прежнему видеть замороженные семейства.
+    const families = new Set([...enumerateAll()].map((s) => setupFamily(s.setup)));
+    expect(families.has("trend_following")).toBe(true);
+    expect(families.has("breakout")).toBe(true);
+    expect(frozenFamilies()).toContain("trend_following");
+    expect(frozenFamilies()).not.toContain("liquidity_magnet");
   });
 });

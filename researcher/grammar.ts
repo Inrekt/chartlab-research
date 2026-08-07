@@ -202,6 +202,15 @@ export interface SetupDef {
   /** Семейства, дублирующие условие самого сетапа, — из комбо исключаются. */
   excludeFamilies?: readonly FilterFamily[];
   /**
+   * ПЛАТЯЩАЯ СТОРОНА края — пункт 6 фазы 1 (политика бюджета). Испытания
+   * получают ночной бюджет ТОЛЬКО при заполненном поле: без письменного
+   * ответа «кто и почему отдаёт нам деньги» семейство не расходует попытки
+   * и не поднимает планку дефляции остальным. Слепой перебор заморожен
+   * политикой (learning-machine-v3, диагноз 0/44000). Поле — не заклинание:
+   * оно обязано ссылаться на механизм из пре-регистрации семейства.
+   */
+  whoPays?: string;
+  /**
    * Правило самодостаточно: комбинации фильтров НЕ перебираются вовсе.
    * Для семейств, где параметры живут в самом сетапе (ликвидити-магнит),
    * добавление 13 фильтров раздуло бы комбинаторику в 252 раза — ровно та
@@ -487,6 +496,8 @@ const LIQUIDITY_SETUPS: readonly SetupDef[] = LIQ_STRETCH_ATRS.flatMap((stretchA
       return {
         id,
         family: "liquidity_magnet",
+        whoPays:
+          "перегруженные плечом лонги: биржа закрывает их принудительно, их стопы и ликвидации — топливо возврата (пре-регистрация семейства)",
         fixedRule: true,
         // Приор невелик: семейство новое и непроверенное, а перекос выборки
         // в его пользу был бы формой подгонки под ожидание владельца.
@@ -534,6 +545,8 @@ const FUNDING_EXITS: readonly RrExit[] = [1, 2, 3].flatMap((takeR) =>
 const FUNDING_SETUPS: readonly SetupDef[] = FUNDING_HOURS_UTC.map((hour) => ({
   id: `funding_hour_${String(hour).padStart(2, "0")}`,
   family: "funding_hours",
+  whoPays:
+    "стороны, обязанные платить фандинг по расписанию 00/08/16 UTC и ребалансирующиеся к расчёту (пре-регистрация семейства)",
   // Приор низкий: ожидание слабое, и эффект скорее всего съеден издержками.
   prior: 0.5,
   fixedRule: true,
@@ -576,6 +589,8 @@ const FUNDING_PRESSURE_SETUPS: readonly SetupDef[] = FUND_WINDOWS_DAYS.flatMap((
   FUND_PERCENTILES.map((percentile) => ({
     id: fundPressureSetupId(windowDays, percentile),
     family: "funding_pressure",
+    whoPays:
+      "сторона, платящая экстремальный фандинг за право оставаться в позиции; ex-ante ожидание распада carry записано в пре-регистрации",
     // Приор низкий: экстремумы фандинга — самый известный публичный индикатор
     // в крипте, и лёгкий край здесь давно бы съели.
     prior: 0.5,
@@ -764,6 +779,11 @@ export function setupTier(setupId: string): "liquid" | "illiquid" | undefined {
   return SETUPS_BY_ID.get(setupId)?.universeTier;
 }
 
+/** Семейства, замороженные политикой бюджета (без платящей стороны). */
+export function frozenFamilies(): string[] {
+  return [...new Set(SETUPS.filter((s) => !s.whoPays).map((s) => s.family))].sort();
+}
+
 export function setupFamily(setupId: string): string {
   const setup = SETUPS_BY_ID.get(setupId);
   if (!setup) throw new Error(`неизвестный сетап: ${setupId}`);
@@ -872,15 +892,21 @@ export function sampleCandidates(
   options?: SampleOptions,
 ): CandidateSpec[] {
   const rand = mulberry32(seed);
-  const totalPrior = SETUPS.reduce((sum, s) => sum + s.prior, 0);
+  // ПОЛИТИКА БЮДЖЕТА (пункт 6 фазы 1): новые испытания получают только
+  // семейства с заполненной платящей стороной. Пространство грамматики при
+  // этом НЕ сужается (enumerateAll/grammarSize нетронуты): журнал, дедуп и
+  // дефляция продолжают считать всё пространство — замораживается только
+  // расход НОВОГО бюджета на слепой перебор.
+  const fundable = SETUPS.filter((s) => s.whoPays);
+  const totalPrior = fundable.reduce((sum, s) => sum + s.prior, 0);
   const picked: CandidateSpec[] = [];
   const seen = new Set<string>();
   const maxAttempts = n * 200;
 
   for (let attempt = 0; attempt < maxAttempts && picked.length < n; attempt++) {
     let roll = rand() * totalPrior;
-    let setup = SETUPS[SETUPS.length - 1];
-    for (const s of SETUPS) {
+    let setup = fundable[fundable.length - 1];
+    for (const s of fundable) {
       roll -= s.prior;
       if (roll <= 0) {
         setup = s;
