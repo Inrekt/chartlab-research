@@ -42,6 +42,7 @@ import {
   liquidityTiers,
   type LiquidityTier,
   clearCandleCache,
+  corpusVersion,
   halvingSubset,
   listUniverse,
   loadCandlesWindow,
@@ -72,7 +73,7 @@ import {
 } from "./batchDiagnostics.ts";
 import { CorrelationClusterer, weeklyFingerprint } from "./clustering.ts";
 import { TrialLedger } from "./ledger.ts";
-import { behavioralExclusionFor, GATE_VERSION, markEpoch } from "./epochs.ts";
+import { behavioralExclusionFor, currentGitSha, GATE_VERSION, markEpoch } from "./epochs.ts";
 import { classifyDeath, depthScore } from "./gatePolicy.ts";
 
 export const STAGE_A_SYMBOLS = 16;
@@ -333,7 +334,17 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     excludeBehavioral,
     diagnostics: sampling,
   });
-  const { inserted } = ledger.registerCandidates(specs);
+  // Происхождение записывается ОДИН раз, при регистрации, и больше не
+  // меняется: задним числом уже не восстановить, каким кодом и на каком
+  // корпусе считалось. Без этих полей нельзя ни повторить результат
+  // конкретной ночи, ни отделить испытания разных эпох в счётчике проб —
+  // а спотовый и фьючерсный корпус это РАЗНЫЕ рынки.
+  const { inserted } = ledger.registerCandidates(specs, {
+    gitSha: currentGitSha(),
+    batchSeed: opts.seed,
+    gateVersion: GATE_VERSION,
+    corpusVersion: corpusVersion(),
+  });
   const batchId = `${opts.tf}:${opts.seed}`;
   log(`Партия: ${specs.length} кандидатов (${inserted} новых). Вселенная ${opts.tf}: ` +
     `${search.length} поисковых + ${holdout.length} отложенных символов.`);

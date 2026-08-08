@@ -59,6 +59,37 @@ export interface UniverseSplit {
 }
 
 /** Детерминированное разбиение: hash(symbol) % 5 == 0 → holdout. */
+/**
+ * Отпечаток корпуса — что именно измеряли.
+ *
+ * Записывается в каждое испытание и НИКОГДА не меняется задним числом.
+ * Нужен потому, что спотовый корпус и фьючерсный — РАЗНЫЕ рынки: цена одна,
+ * а микроструктура (фандинг, открытый интерес, ликвидации) существует только
+ * у вторых. Смешивать испытания разных корпусов в одном счётчике проб —
+ * значит поднимать планку дефляции измерениями чужого рынка.
+ *
+ * Формат: `<источник>:<число символов>:<самый ранний бар>`, например
+ * `perp:162:2019-09-08`. Из манифеста, если он есть; иначе — по каталогу,
+ * чтобы поле никогда не было пустым.
+ */
+export function corpusVersion(historyDir = HISTORY_DIR): string {
+  try {
+    const manifest = JSON.parse(readFileSync(join(historyDir, "manifest.json"), "utf8")) as {
+      source?: string;
+      symbols?: number;
+      coverage?: { tf: string; firstIso: string }[];
+    };
+    const earliest = (manifest.coverage ?? [])
+      .filter((c) => c.tf === "1h")
+      .reduce((a, c) => (c.firstIso < a ? c.firstIso : a), "9999");
+    return `${manifest.source ?? "unknown"}:${manifest.symbols ?? 0}:${earliest.slice(0, 10)}`;
+  } catch {
+    // Манифеста нет — корпус собран не нашим сборщиком. Это тоже факт,
+    // и его надо записать честно, а не подставить пустоту.
+    return `nomanifest:${listUniverse("1h", historyDir).length}:unknown`;
+  }
+}
+
 export function splitHoldout(symbols: readonly string[]): UniverseSplit {
   const search: string[] = [];
   const holdout: string[] = [];

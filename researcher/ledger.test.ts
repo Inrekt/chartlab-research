@@ -35,6 +35,52 @@ describe("registration", () => {
     expect(ledger.counts().trials).toBe(20);
   });
 
+  test("записывает происхождение испытания и не переписывает его при повторе", () => {
+    // Без этих четырёх полей результат конкретной ночи невоспроизводим, а
+    // испытания разных эпох (спотовый корпус против фьючерсного) неразличимы
+    // в счётчике проб — то есть планка дефляции считается по чужому рынку.
+    ledger.registerCandidates(specs.slice(0, 3), {
+      gitSha: "abc1234",
+      batchSeed: 42,
+      gateVersion: 5,
+      corpusVersion: "perp:162:2019-09-08",
+    });
+    const rows = ledger.byState("CANDIDATE");
+    expect(rows).toHaveLength(3);
+
+    const raw = ledger.provenanceOf(rows[0]!.candidateId);
+    expect(raw).toEqual({
+      gitSha: "abc1234",
+      batchSeed: 42,
+      gateVersion: 5,
+      corpusVersion: "perp:162:2019-09-08",
+    });
+
+    // Повторная подача той же спеки молча пропускается (попытка уже
+    // посчитана) — и происхождение обязано остаться ПЕРВЫМ. Иначе поздний
+    // прогон переписал бы историю измерений задним числом.
+    ledger.registerCandidates(specs.slice(0, 3), {
+      gitSha: "deadbee",
+      batchSeed: 999,
+      gateVersion: 6,
+      corpusVersion: "spot:170:2021-07-11",
+    });
+    expect(ledger.provenanceOf(rows[0]!.candidateId)).toEqual(raw);
+  });
+
+  test("старые записи без происхождения читаются как пустые, а не падают", () => {
+    // Журнал append-only: 56 374 записи существуют без этих полей, и это
+    // ЧЕСТНО — у них этих данных действительно не было.
+    ledger.registerCandidates(specs.slice(0, 2));
+    const row = ledger.byState("CANDIDATE")[0]!;
+    expect(ledger.provenanceOf(row.candidateId)).toEqual({
+      gitSha: null,
+      batchSeed: null,
+      gateVersion: null,
+      corpusVersion: null,
+    });
+  });
+
   test("counts clusters distinctly for DSR N_eff", () => {
     ledger.registerCandidates(specs);
     const { trials, clusters } = ledger.counts();

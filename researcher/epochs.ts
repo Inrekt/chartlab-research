@@ -28,7 +28,10 @@
  *    последующий разбор журнала знает, каким прибором сделана запись
  *    (дополнительно каждая eval эпохи-2 несёт gateVersion).
  */
+import { execFileSync } from "node:child_process";
+import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { behavioralId, type CandidateSpec, type SignalTf } from "./grammar.ts";
 
 /**
@@ -61,6 +64,34 @@ import { behavioralId, type CandidateSpec, type SignalTf } from "./grammar.ts";
  * измерения разных приборов не смешиваются в журнале.
  */
 export const GATE_VERSION = 5;
+
+/**
+ * Версия кода, которым считалось испытание.
+ *
+ * Без неё «результат ночи от 14 августа» невоспроизводим: движок и ворота
+ * меняются, а журнал append-only и переписать его нельзя. Суффикс `+dirty`
+ * означает, что в момент прогона были незакоммиченные правки — такой
+ * результат воспроизводим лишь приблизительно, и это честнее скрыть нельзя.
+ *
+ * Никогда не бросает: отсутствие git — не повод ронять ночь.
+ */
+export function currentGitSha(): string {
+  try {
+    const sha = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: dirname(fileURLToPath(import.meta.url)),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const dirty = execFileSync("git", ["status", "--porcelain"], {
+      cwd: dirname(fileURLToPath(import.meta.url)),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return dirty ? `${sha}+dirty` : sha;
+  } catch {
+    return "unknown";
+  }
+}
 
 /** Порядок ТФ внутри ночи эпохи-1 — дословно дефолт RESEARCHER_TFS. */
 const EPOCH1_NIGHT_TFS: readonly SignalTf[] = ["1h", "4h"];

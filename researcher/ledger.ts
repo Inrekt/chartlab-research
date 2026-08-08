@@ -51,6 +51,29 @@ export interface TrialRow {
   updatedAt: string;
 }
 
+/**
+ * Происхождение испытания — четыре поля, без которых результат ночи
+ * невоспроизводим, а испытания разных эпох неразличимы в счётчике проб.
+ *
+ * Заполняется при регистрации и больше НИКОГДА не меняется: журнал
+ * append-only, и переписать происхождение задним числом означало бы
+ * подделать историю измерений.
+ */
+export interface Provenance {
+  /** Версия кода, которым считалось. */
+  gitSha?: string;
+  /** Сид партии — детерминизм выборки кандидатов. */
+  batchSeed?: number;
+  /** Версия ворот: испытания разных версий напрямую несравнимы. */
+  gateVersion?: number;
+  /**
+   * Версия корпуса. Главное поле: спотовый и фьючерсный корпус — РАЗНЫЕ
+   * рынки, и смешивать их испытания в одном счётчике множественности
+   * нельзя. Без этого поля разделить эпохи задним числом невозможно.
+   */
+  corpusVersion?: string;
+}
+
 export interface TrialCounts {
   /** Всего испытаний за всю жизнь журнала — сырое N. */
   trials: number;
@@ -129,17 +152,85 @@ export class TrialLedger {
     this.db
       .prepare("INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '1')")
       .run();
+    this.migrate();
+  }
+
+  /**
+   * Миграции схемы. Только ADD COLUMN — журнал append-only, и ни одна
+   * миграция не имеет права переписывать историю: старые строки получают
+   * NULL, и это ЧЕСТНО (у них этих данных действительно не было).
+   */
+  private migrate(): void {
+    const columns = new Set(
+      this.db.prepare("PRAGMA table_info(trials)").all().map((r) => String(r.name)),
+    );
+    // Воспроизводимость (v2). Без этих полей нельзя ни повторить результат
+    // конкретной ночи, ни отделить испытания разных эпох при подсчёте
+    // множественности. Окно закрывается НАВСЕГДА в момент смены корпуса:
+    // задним числом уже не восстановить, на каких данных и каким кодом
+    // считалось. Поэтому колонки добавляются ДО подмены корпуса.
+    for (const [name, ddl] of [
+      // Версия кода: без неё «результат ночи X» невоспроизводим.
+      ["git_sha", "ALTER TABLE trials ADD COLUMN git_sha TEXT"],
+      // Сид партии: детерминизм выборки кандидатов.
+      ["batch_seed", "ALTER TABLE trials ADD COLUMN batch_seed INTEGER"],
+      // Версия ворот: испытания разных версий несравнимы напрямую.
+      ["gate_version", "ALTER TABLE trials ADD COLUMN gate_version INTEGER"],
+      // Версия корпуса: ГЛАВНОЕ поле. Спотовый корпус и фьючерсный — разные
+      // рынки, и смешивать их испытания в одном счётчике проб нельзя.
+      ["corpus_version", "ALTER TABLE trials ADD COLUMN corpus_version TEXT"],
+    ] as const) {
+      if (!columns.has(name)) this.db.exec(ddl);
+    }
+    this.db
+      .prepare("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '2')")
+      .run();
+  }
+
+  /**
+   * Происхождение испытания. `null` в полях — законное состояние: записи,
+   * сделанные до введения этих колонок, действительно не несут этих данных,
+   * и подставлять им что-либо задним числом означало бы подделку.
+   */
+  provenanceOf(candidateId: string): {
+    gitSha: string | null;
+    batchSeed: number | null;
+    gateVersion: number | null;
+    corpusVersion: string | null;
+  } {
+    const row = this.db
+      .prepare(
+        "SELECT git_sha, batch_seed, gate_version, corpus_version FROM trials WHERE candidate_id = ?",
+      )
+      .get(candidateId) as
+      | {
+          git_sha: string | null;
+          batch_seed: number | null;
+          gate_version: number | null;
+          corpus_version: string | null;
+        }
+      | undefined;
+    return {
+      gitSha: row?.git_sha ?? null,
+      batchSeed: row?.batch_seed ?? null,
+      gateVersion: row?.gate_version ?? null,
+      corpusVersion: row?.corpus_version ?? null,
+    };
   }
 
   /**
    * Регистрирует партию кандидатов. Повторная подача того же id молча
    * пропускается — попытка уже посчитана, второй раз она N не увеличивает.
    */
-  registerCandidates(specs: readonly CandidateSpec[]): { inserted: number; skipped: number } {
+  registerCandidates(
+    specs: readonly CandidateSpec[],
+    provenance?: Provenance,
+  ): { inserted: number; skipped: number } {
     const stmt = this.db.prepare(
       `INSERT OR IGNORE INTO trials
-         (candidate_id, spec_json, setup_family, cluster_key, state, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'CANDIDATE', ?, ?)`,
+         (candidate_id, spec_json, setup_family, cluster_key, state, created_at, updated_at,
+          git_sha, batch_seed, gate_version, corpus_version)
+       VALUES (?, ?, ?, ?, 'CANDIDATE', ?, ?, ?, ?, ?, ?)`,
     );
     let inserted = 0;
     const at = this.now();
@@ -153,6 +244,10 @@ export class TrialLedger {
           defaultClusterKey(spec),
           at,
           at,
+          provenance?.gitSha ?? null,
+          provenance?.batchSeed ?? null,
+          provenance?.gateVersion ?? null,
+          provenance?.corpusVersion ?? null,
         );
         inserted += Number(result.changes);
       }
