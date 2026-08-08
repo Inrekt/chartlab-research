@@ -37,6 +37,15 @@ jobs:
 
       - run: npm ci
 
+      # Журнал хранится в репозитории ТЕКСТОВЫМ ДАМПОМ, а не бинарником:
+      # trials.sqlite дорос до 97 МиБ при жёстком лимите GitHub 100 МиБ, а
+      # дамп тех же данных весит 10.5 МиБ (замерено). Здесь он разворачивается
+      # обратно в базу перед прогоном.
+      - name: Restore journal from dump
+        env:
+          RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
+        run: npx tsx researcher/journal-sync.ts restore
+
       - name: Run the night (both universes)
         env:
           RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
@@ -56,6 +65,16 @@ jobs:
       # (инкубатор, надзор, дайджест) выбрасывало все ~4000 испытаний ночи,
       # nEffective не рос, дедуп не срабатывал — и следующая ночь честно
       # прогоняла ровно те же спеки заново.
+      # Дамп СНАЧАЛА, коммит потом — и то и другое при падении ночи: испытания
+      # уже в базе, терять их из-за упавшего шага нельзя. Здесь же срабатывает
+      # страж размера: превышение порога — ошибка инфраструктуры с внятным
+      # текстом, а не тихая потеря push'а.
+      - name: Dump journal for git
+        if: always()
+        env:
+          RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
+        run: npx tsx researcher/journal-sync.ts dump
+
       - name: Commit journal + digest to the private repo
         if: always()
         run: |
@@ -66,7 +85,13 @@ jobs:
           git diff --cached --quiet || git commit -m "night $(date -u '+%F %H:%M') UTC"
           git push
 
+      # Публикуется ДАЖЕ если ночь упала — и это важнее, чем кажется. Без
+      # if: always() красная ночь оставляла на экране ПРЕДЫДУЩИЙ зелёный
+      # статус: снаружи всё хорошо, внутри машина мертва. Ровно так корпус
+      # простоял две недели, а ночи 06.08 не было вовсе и никто не заметил.
+      # Статус обязан говорить правду в первую очередь ИМЕННО о провале.
       - name: Publish anonymised status (monitor in the app reads this)
+        if: always()
         run: |
           git config user.name "chartlab-research-bot"
           git config user.email "bot@users.noreply.github.com"

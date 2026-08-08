@@ -35,6 +35,12 @@ jobs:
 
       - run: npm ci
 
+      # См. nightly.yml: журнал живёт в репозитории текстовым дампом.
+      - name: Restore journal from dump
+        env:
+          RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
+        run: npx tsx researcher/journal-sync.ts restore
+
       - name: Catch up incubation + supervision
         env:
           RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
@@ -49,6 +55,12 @@ jobs:
       # Та же причина, что в nightly.yml: форвард-сделки инкубатора уже
       # записаны, и терять их из-за падения следующего шага нельзя — курсор
       # уедет, а сделки исчезнут.
+      - name: Dump journal for git
+        if: always()
+        env:
+          RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
+        run: npx tsx researcher/journal-sync.ts dump
+
       - name: Commit journal to the private repo
         if: always()
         run: |
@@ -59,7 +71,10 @@ jobs:
           git diff --cached --quiet || git commit -m "tick $(date -u '+%F %H:%M') UTC"
           git push
 
+      # См. nightly.yml: статус обязан публиковаться и при падении, иначе
+      # экран показывает старые хорошие цифры мёртвой машины.
       - name: Publish anonymised status (monitor in the app reads this)
+        if: always()
         run: |
           git config user.name "chartlab-research-bot"
           git config user.email "bot@users.noreply.github.com"
