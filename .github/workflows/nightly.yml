@@ -42,6 +42,12 @@ jobs:
           RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
           RESEARCHER_VAULT_DIR: ${{ github.workspace }}/data/vault
           RESEARCHER_STATUS_DIR: ${{ github.workspace }}/status
+          # Фандинг и почасовые метрики лежат в приватном data-репо, который
+          # смонтирован в data/. Без этой переменной readFundingCsv молча
+          # возвращает null на каждый символ, атом funding даёт false на
+          # каждом баре, и семейство умирает как «мало сделок» — так было
+          # убито 212 испытаний funding_pressure (все с нулём сделок).
+          COLLECT_DIR: ${{ github.workspace }}/data/market
           RESEARCHER_NIGHT_N: "2000"
         run: npx tsx researcher/nightly.ts > night-summary.json
 

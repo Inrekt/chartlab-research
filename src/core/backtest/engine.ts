@@ -318,7 +318,19 @@ function advanceOpenPosition(
   if (hitStop || !hitTarget) fillPendingAdds(open, bar);
 
   if (!hitStop && !hitTarget && !timedOut) return null;
-  const exitPrice = hitStop ? open.stopPrice : hitTarget ? open.targetPrice : bar.close;
+  // Гэп через стоп исполняется по ОТКРЫТИЮ, а не по цене стопа: если бар
+  // открылся уже за стопом (каскад ликвидаций, ночная новость, разрыв
+  // выходных на FX), цены стопа в этом баре не существовало, и выйти по
+  // ней было физически нельзя. Считать иначе — обрезать левый хвост по
+  // построению и приукрасить и skew карточки выпускника, и вероятность
+  // нарушить дневной лимит проп-фирмы. Для цели такой поправки нет: гэп
+  // в нашу пользу тоже исполняется по цели, а не по лучшему открытию,
+  // иначе прибыль росла бы из предположения о порядке тиков.
+  const stopFill =
+    open.direction === "long"
+      ? Math.min(bar.open, open.stopPrice)
+      : Math.max(bar.open, open.stopPrice);
+  const exitPrice = hitStop ? stopFill : hitTarget ? open.targetPrice : bar.close;
   return closeTrade(symbol, open, bar.time, exitPrice);
 }
 

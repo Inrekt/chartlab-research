@@ -40,6 +40,10 @@ jobs:
           RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
           RESEARCHER_VAULT_DIR: ${{ github.workspace }}/data/vault
           RESEARCHER_STATUS_DIR: ${{ github.workspace }}/status
+          # См. комментарий в nightly.yml: инкубатор гоняет тот же движок,
+          # и без COLLECT_DIR фандинговый кандидат просидел бы 365 дней с
+          # нулём форвард-сделок и умер бы «по календарю».
+          COLLECT_DIR: ${{ github.workspace }}/data/market
         run: npx tsx researcher/hourly.ts
 
       - name: Commit journal to the private repo
