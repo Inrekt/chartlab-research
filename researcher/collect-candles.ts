@@ -54,8 +54,16 @@ const HOSTS: Record<Source, { klines: string; info: string }> = {
 const TF_MS: Record<SignalTf, number> = { "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000 };
 /** fapi отдаёт до 1500 баров за запрос, спот — до 1000. Берём общий минимум. */
 const PAGE = 1000;
-/** Пауза между запросами: вес klines(limit=1000) = 10, лимит 2400/мин. */
+/** Пауза между запросами внутри одного символа. */
 const GAP_MS = 120;
+/**
+ * Символов одновременно. Узкое место — задержка сети (запрос идёт ~1 с при
+ * паузе 120 мс), а не лимит биржи: klines(limit=1000) стоит вес 10 при
+ * бюджете 2400/мин, то есть 240 запросов в минуту. Последовательный сбор
+ * даёт ~60/мин и растянулся бы на часы; шесть потоков укладываются в бюджет
+ * с запасом и упираются уже в биржу, а не в ожидание.
+ */
+const CONCURRENCY = 6;
 const MAX_RETRY = 4;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -193,7 +201,9 @@ async function main(): Promise<void> {
 
   const coverage: SymbolCoverage[] = [];
   let done = 0;
-  for (const symbol of symbols) {
+
+  /** Один символ целиком (все ТФ) — единица работы для пула. */
+  const collectSymbol = async (symbol: string): Promise<void> => {
     for (const tf of tfs) {
       const path = join(outDir, `${symbol}_${tf}.json.gz`);
       const existing = full ? [] : readCorpus(path);
@@ -222,7 +232,20 @@ async function main(): Promise<void> {
     }
     done += 1;
     if (done % 10 === 0) console.error(`  …${done}/${symbols.length} символов`);
-  }
+  };
+
+  // Пул воркеров: каждый берёт следующий символ из общей очереди. Порядок
+  // результатов не важен — манифест всё равно сортируется при чтении.
+  const queue = [...symbols];
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
+      for (;;) {
+        const symbol = queue.shift();
+        if (symbol === undefined) return;
+        await collectSymbol(symbol);
+      }
+    }),
+  );
 
   const manifest: CorpusManifest = {
     source,
