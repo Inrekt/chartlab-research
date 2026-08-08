@@ -94,6 +94,24 @@ async function getJson(url: string): Promise<unknown> {
   throw new Error(`не удалось получить ${url}`);
 }
 
+/**
+ * Спотовое имя → имя перпа. Монеты с крошечной ценой торгуются на фьючерсах
+ * пачками по 1000 штук (SHIBUSDT на споте = 1000SHIBUSDT на перпах), иначе
+ * шаг цены не выразить. Без этой таблицы пять ликвидных мем-коинов молча
+ * выпали бы из вселенной как «нет фьючерса», хотя фьючерс есть.
+ *
+ * ВНИМАНИЕ на будущее: цена перпа здесь в 1000 раз больше спотовой. Для
+ * бэктеста это безразлично (все правила и стопы относительные, в ATR и R),
+ * но абсолютные пороги цены по таким символам сравнивать нельзя.
+ */
+const PERP_ALIASES: Record<string, string> = {
+  SHIBUSDT: "1000SHIBUSDT",
+  PEPEUSDT: "1000PEPEUSDT",
+  BONKUSDT: "1000BONKUSDT",
+  FLOKIUSDT: "1000FLOKIUSDT",
+  LUNCUSDT: "1000LUNCUSDT",
+};
+
 /** Живые USDT-символы биржи. Для перпов — только PERPETUAL в статусе TRADING. */
 async function fetchUniverse(source: Source): Promise<string[]> {
   const info = (await getJson(HOSTS[source].info)) as {
@@ -210,8 +228,11 @@ async function main(): Promise<void> {
       // Дозапись начинается со СЛЕДУЮЩЕГО бара после последнего известного.
       const fromMs =
         existing.length > 0 ? existing[existing.length - 1].time * 1000 + TF_MS[tf] : 0;
+      // Файл называем спотовым именем (им пользуются фандинг, метрики и весь
+      // остальной код), а запрашиваем — фьючерсным.
+      const remote = source === "perp" ? (PERP_ALIASES[symbol] ?? symbol) : symbol;
       try {
-        const fresh = await fetchKlines(source, symbol, tf, fromMs);
+        const fresh = await fetchKlines(source, remote, tf, fromMs);
         const merged = mergeCandles(existing, fresh);
         if (merged.length > 0 && merged.length !== existing.length) {
           writeFileSync(path, gzipSync(JSON.stringify(merged)));
@@ -247,33 +268,54 @@ async function main(): Promise<void> {
     }),
   );
 
+  // Манифест описывает КАТАЛОГ, а не прогон: сканируем всё, что лежит рядом.
+  // Иначе запуск с --symbols по пяти монетам затирал бы описание корпуса из
+  // 157 символов пятью строками — и потребитель манифеста (в том числе выбор
+  // рынка живых свечей в binance.ts) читал бы неправду.
+  const full$ = scanCorpus(outDir);
   const manifest: CorpusManifest = {
     source,
     generatedAt: new Date().toISOString(),
-    tfs,
-    symbols: new Set(coverage.map((c) => c.symbol)).size,
-    coverage,
+    tfs: [...new Set(full$.map((c) => c.tf))],
+    symbols: new Set(full$.map((c) => c.symbol)).size,
+    coverage: full$,
   };
   writeFileSync(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 1));
 
-  const oneH = coverage.filter((c) => c.tf === "1h");
+  const oneH = full$.filter((c) => c.tf === "1h");
   const earliest = oneH.reduce((a, c) => (c.firstIso < a ? c.firstIso : a), "9999");
   console.log(
     JSON.stringify({
       source,
-      symbols: manifest.symbols,
-      files: coverage.length,
+      corpusSymbols: manifest.symbols,
+      corpusFiles: full$.length,
+      touchedThisRun: coverage.length,
       earliest1h: earliest,
       maxBars1h: oneH.reduce((a, c) => Math.max(a, c.bars), 0),
+      totalBars1h: oneH.reduce((a, c) => a + c.bars, 0),
       outDir,
     }),
   );
 }
 
-/** Каталоги корпусов рядом — для отчёта о том, чем сейчас измеряют. */
-export function listCorpusDirs(root: string): string[] {
-  if (!existsSync(root)) return [];
-  return readdirSync(root).filter((d) => d.startsWith("history"));
+/** Покрытие по ВСЕМ файлам каталога — источник правды для манифеста. */
+export function scanCorpus(dir: string): SymbolCoverage[] {
+  if (!existsSync(dir)) return [];
+  const out: SymbolCoverage[] = [];
+  for (const file of readdirSync(dir)) {
+    const m = file.match(/^(.+)_(1h|4h|1d)\.json\.gz$/);
+    if (!m) continue;
+    const candles = readCorpus(join(dir, file));
+    if (candles.length === 0) continue;
+    out.push({
+      symbol: m[1],
+      tf: m[2] as SignalTf,
+      bars: candles.length,
+      firstIso: new Date(candles[0].time * 1000).toISOString(),
+      lastIso: new Date(candles[candles.length - 1].time * 1000).toISOString(),
+    });
+  }
+  return out.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.tf.localeCompare(b.tf));
 }
 
 await main();
