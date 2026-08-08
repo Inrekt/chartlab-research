@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import type { SignalTf } from "./grammar.ts";
 import { runIncubation, type IncubationSummary } from "./incubate.ts";
 import { DB_PATH, DEFAULT_VAULT_DIR } from "./paths.ts";
+import { assertDataSources } from "./preflight.ts";
 import { runScreen, type ScreenSummary } from "./screen.ts";
 import { writeStatus } from "./statusFile.ts";
 import { runSupervision, type SupervisionSummary } from "./supervise.ts";
@@ -131,6 +132,11 @@ ${[historyLine, ...history].join("\n")}
 }
 
 async function main(): Promise<void> {
+  // Первым делом, до единого испытания: есть ли вообще источники данных.
+  // Ночь без них не даёт «ноль находок», она даёт ноль СДЕЛОК, записанный в
+  // журнал как вывод о рынке. Так было потеряно 212 испытаний фандинга.
+  assertDataSources();
+
   const startedAt = Date.now();
   const n = Number(process.env.RESEARCHER_NIGHT_N ?? 2000);
   const tfs = (process.env.RESEARCHER_TFS ?? "1h,4h")
