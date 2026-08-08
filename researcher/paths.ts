@@ -13,7 +13,22 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const CHARTLAB_HOME = join(homedir(), ".chartlab");
-export const DATA_DIR = process.env.RESEARCHER_DATA_DIR ?? join(CHARTLAB_HOME, "data");
+/**
+ * По умолчанию — зеркало ПРИВАТНОГО data-репо, то есть ровно тот журнал, в
+ * который пишет облако (там воркфлоу задают RESEARCHER_DATA_DIR=<repo>/ledger).
+ *
+ * Раньше дефолтом был ~/.chartlab/data, и это молча создало ВТОРОЙ журнал:
+ * 6231 кандидат с 2026-07-24 в локальном против 56374 в облачном. Ровно та
+ * авария, от которой предостерегает комментарий выше: раздвоенный счёт попыток
+ * = сломанная дефляция, потому что каждая половина считает планку по своей
+ * части испытаний и обе занижают её.
+ *
+ * Разовый прогон, который НЕ должен тратить бюджет проб, обязан явно задать
+ * RESEARCHER_DB_PATH на временный файл — и его результаты нельзя использовать
+ * для отбора кандидатов, только для проверки «код не падает».
+ */
+export const DATA_DIR =
+  process.env.RESEARCHER_DATA_DIR ?? join(CHARTLAB_HOME, "data-repo", "ledger");
 export const DB_PATH = process.env.RESEARCHER_DB_PATH ?? join(DATA_DIR, "trials.sqlite");
 export const OUTBOX_DIR = join(CHARTLAB_HOME, "outbox");
 export const DEFAULT_VAULT_DIR =

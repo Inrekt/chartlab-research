@@ -33,6 +33,7 @@ import {
   setupNeighbors,
   setupTier,
   sampleCandidates,
+  type SampleDiagnostics,
   toStrategyConfig,
   type CandidateSpec,
   type SignalTf,
@@ -326,14 +327,45 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   // поведению (правило × корпус), а не по ярлыку — см. epochs.ts.
   markEpoch(opts.dbPath);
   const excludeBehavioral = behavioralExclusionFor(opts.dbPath, opts.tf);
+  const sampling = {} as SampleDiagnostics;
   const specs = sampleCandidates(opts.seed, opts.n, ledger.allCandidateIds(), {
     tf: opts.tf,
     excludeBehavioral,
+    diagnostics: sampling,
   });
   const { inserted } = ledger.registerCandidates(specs);
   const batchId = `${opts.tf}:${opts.seed}`;
   log(`Партия: ${specs.length} кандидатов (${inserted} новых). Вселенная ${opts.tf}: ` +
     `${search.length} поисковых + ${holdout.length} отложенных символов.`);
+
+  // Недобор партии обязан быть СОБЫТИЕМ, а не строчкой в логе. Пространство
+  // финансируемых семейств конечно (fundableSpaceSize) и однажды кончится;
+  // когда это случится, ночь молча выродится в холостой прогон, и месяцы
+  // «работы» не проверят ни одной гипотезы. Ровно это и произошло: партия
+  // из 4 кандидатов выглядела в отчёте как обычная маленькая партия.
+  if (specs.length < opts.n) {
+    log(
+      `НЕДОБОР ПАРТИИ: запрошено ${opts.n}, набрано ${specs.length}. ` +
+        `Пространство финансируемых семейств на ${opts.tf}: ${sampling.space} комбинаций, ` +
+        `холостых бросков ${sampling.wastedAttempts}` +
+        (sampling.attemptsExhausted ? ", лимит бросков ИСЧЕРПАН" : "") +
+        ".",
+    );
+  }
+  if (specs.length < opts.n / 2) {
+    throw new Error(
+      [
+        `Пространство гипотез исчерпано: набрано ${specs.length} из ${opts.n} запрошенных.`,
+        `Всё пространство финансируемых семейств на ТФ ${opts.tf} — ${sampling.space} комбинаций,`,
+        `и свободных в нём практически не осталось (${sampling.wastedAttempts} бросков подряд впустую).`,
+        "",
+        "Прогон ОСТАНОВЛЕН намеренно: проверять почти нечего, и холостая ночь",
+        "выглядела бы в отчёте как обычная работа.",
+        "Дальше — не ослаблять ворота, а дать новому семейству пре-регистрацию",
+        "с полем «кто платит»: только это законно расширяет пространство.",
+      ].join("\n"),
+    );
+  }
 
   // ── Стадия 16 символов ────────────────────────────────────────────────────
   log(`Стадия 1/3: ${specs.length} кандидатов × ${stageASymbols.length} символов…`);

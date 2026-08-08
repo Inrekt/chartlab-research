@@ -51,7 +51,13 @@ jobs:
           RESEARCHER_NIGHT_N: "2000"
         run: npx tsx researcher/nightly.ts > night-summary.json
 
+      # Журнал коммитится ДАЖЕ если ночь упала. Испытания уже прогнаны и
+      # записаны в SQLite: без этого падение любого шага ПОСЛЕ скрина
+      # (инкубатор, надзор, дайджест) выбрасывало все ~4000 испытаний ночи,
+      # nEffective не рос, дедуп не срабатывал — и следующая ночь честно
+      # прогоняла ровно те же спеки заново.
       - name: Commit journal + digest to the private repo
+        if: always()
         run: |
           cd data
           git config user.name "chartlab-research-bot"

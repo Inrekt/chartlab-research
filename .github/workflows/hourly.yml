@@ -46,7 +46,11 @@ jobs:
           COLLECT_DIR: ${{ github.workspace }}/data/market
         run: npx tsx researcher/hourly.ts
 
+      # Та же причина, что в nightly.yml: форвард-сделки инкубатора уже
+      # записаны, и терять их из-за падения следующего шага нельзя — курсор
+      # уедет, а сделки исчезнут.
       - name: Commit journal to the private repo
+        if: always()
         run: |
           cd data
           git config user.name "chartlab-research-bot"

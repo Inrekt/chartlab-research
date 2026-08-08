@@ -842,6 +842,24 @@ export function grammarSize(): number {
   return total * DIRECTIONS.length * SIGNAL_TFS.length;
 }
 
+/**
+ * Размер пространства, доступного НОВЫМ испытаниям, — то есть только семейства
+ * с заполненной платящей стороной, и на ОДНОМ таймфрейме (ночь прогоняет
+ * вселенные по очереди, каждая со своим корпусом).
+ *
+ * Нужен, чтобы отличить «сэмплер не дотянул случайно» от «тянуть больше
+ * неоткуда». Без этого числа исчерпание пространства выглядит в отчёте как
+ * обычная маленькая партия, и машина месяцами «работает», ничего не проверяя.
+ */
+export function fundableSpaceSize(): number {
+  let total = 0;
+  for (const setup of SETUPS) {
+    if (!setup.whoPays) continue;
+    total += filterCombosFor(setup.id).length * exitsFor(setup.id).length;
+  }
+  return total * DIRECTIONS.length;
+}
+
 /** Полное перечисление пространства (ленивое — для подсчётов и аудита). */
 export function* enumerateAll(): Generator<CandidateSpec> {
   for (const setup of SETUPS) {
@@ -879,6 +897,31 @@ export interface SampleOptions {
   tf?: SignalTf;
   /** Поведенческие id (без ТФ), уже РЕАЛЬНО прогнанные на корпусе этого ТФ. */
   excludeBehavioral?: ReadonlySet<string>;
+  /**
+   * Куда положить диагностику недобора. Сэмплер ОБЯЗАН уметь объяснить, почему
+   * партия вышла меньше запроса: 400 000 холостых бросков подряд и молчаливый
+   * возврат неполного списка выглядят в отчёте ровно как «сегодня нашлось
+   * мало» — и так исчерпание пространства осталось незамеченным.
+   */
+  diagnostics?: SampleDiagnostics;
+}
+
+/** Заполняется сэмплером; поля осмысленны только после вызова. */
+export interface SampleDiagnostics {
+  requested: number;
+  picked: number;
+  /** Всё пространство финансируемых семейств на одном ТФ. */
+  space: number;
+  /**
+   * Размер переданных множеств исключения. ВНИМАНИЕ: это весь журнал, а не
+   * доля пространства — сравнивать с `space` напрямую нельзя (там все
+   * семейства за всю историю, здесь только финансируемые на одном ТФ).
+   */
+  excludedSetSize: number;
+  /** Броски, потраченные впустую: дубль или уже прогнанное правило. */
+  wastedAttempts: number;
+  /** Исчерпан ли лимит бросков — верный признак, что тянуть больше неоткуда. */
+  attemptsExhausted: boolean;
 }
 
 /**
@@ -902,8 +945,10 @@ export function sampleCandidates(
   const picked: CandidateSpec[] = [];
   const seen = new Set<string>();
   const maxAttempts = n * 200;
+  let attemptsUsed = 0;
 
   for (let attempt = 0; attempt < maxAttempts && picked.length < n; attempt++) {
+    attemptsUsed = attempt + 1;
     let roll = rand() * totalPrior;
     let setup = fundable[fundable.length - 1];
     for (const s of fundable) {
@@ -934,6 +979,16 @@ export function sampleCandidates(
     if (options?.excludeBehavioral?.has(behavioralId(spec))) continue;
     seen.add(id);
     picked.push(spec);
+  }
+
+  if (options?.diagnostics) {
+    const d = options.diagnostics;
+    d.requested = n;
+    d.picked = picked.length;
+    d.space = fundableSpaceSize();
+    d.excludedSetSize = (exclude?.size ?? 0) + (options.excludeBehavioral?.size ?? 0);
+    d.wastedAttempts = attemptsUsed - picked.length;
+    d.attemptsExhausted = attemptsUsed >= maxAttempts && picked.length < n;
   }
   return picked;
 }
