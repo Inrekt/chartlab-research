@@ -50,7 +50,10 @@ const SOURCES: ReadonlyArray<{ name: string; sub: string; required: number }> = 
 function countCsv(dir: string): number {
   if (!existsSync(dir)) return 0;
   try {
-    return readdirSync(dir).filter((f) => f.endsWith(".csv")).length;
+    // .csv.gz — то, что лежит в репозитории; .csv — то, что оставляет бэкфилл
+    // локально. Считаем оба, иначе предохранитель заругался бы на здоровое
+    // окружение просто из-за формата хранения.
+    return readdirSync(dir).filter((f) => f.endsWith(".csv") || f.endsWith(".csv.gz")).length;
   } catch {
     return 0;
   }
