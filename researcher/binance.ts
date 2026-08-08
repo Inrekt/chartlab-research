@@ -2,7 +2,21 @@
  * Источник живых свечей для инкубатора — публичный REST Binance (без ключа).
  * Отдаёт ТОЛЬКО закрытые бары: незакрытая свеча — это ещё не факт, решать по
  * ней нельзя (и в бэктесте её тоже не существует — паритет).
+ *
+ * РЫНОК берётся из манифеста корпуса (см. klinesUrlFromCorpus ниже), а не
+ * задан константой. Источник живых баров ОБЯЗАН совпадать с источником
+ * корпуса: иначе кандидат проверяется на одном рынке, а инкубируется на
+ * другом, и разойдутся они молча.
+ *
+ * До 2026-08-08 здесь и в корпусе стоял СПОТ (api.binance.com/api/v3) —
+ * найдено сверкой байт в байт, см. collect-candles.ts. Это была ошибка:
+ * фандинг, открытый интерес, long-short и поток тейкеров фьючерсные;
+ * механизм края владельца (ликвидации, охота за стопами) живёт на плече, а
+ * плечо есть только на перпах; и торговать владелец будет перпы.
  */
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Candle } from "../src/core/types/index.ts";
 import type { SignalTf } from "./grammar.ts";
 
@@ -12,7 +26,36 @@ export const TF_SECONDS: Record<SignalTf, number> = {
   "1d": 86_400,
 };
 
-const BASE_URL = "https://api.binance.com/api/v3/klines";
+const SPOT_KLINES = "https://api.binance.com/api/v3/klines";
+const PERP_KLINES = "https://fapi.binance.com/fapi/v1/klines";
+
+/**
+ * Рынок берётся из МАНИФЕСТА КОРПУСА, а не из константы, — чтобы источник
+ * живых баров нельзя было забыть переключить вместе с корпусом. Манифеста
+ * нет (старый спотовый корпус) → спот; `source: "perp"` → перпы.
+ *
+ * Развязка ровно та, из-за которой ошибка и прожила так долго: две настройки
+ * в разных файлах, обязанные совпадать, рано или поздно разъезжаются молча.
+ */
+function klinesUrlFromCorpus(): string {
+  const manifest = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "public",
+    "data",
+    "history",
+    "manifest.json",
+  );
+  if (!existsSync(manifest)) return SPOT_KLINES;
+  try {
+    const { source } = JSON.parse(readFileSync(manifest, "utf-8")) as { source?: string };
+    return source === "perp" ? PERP_KLINES : SPOT_KLINES;
+  } catch {
+    return SPOT_KLINES;
+  }
+}
+
+const BASE_URL = klinesUrlFromCorpus();
 const PAGE_LIMIT = 1000;
 const MAX_PAGES = 20;
 const RETRY_AFTER_CAP_SEC = 60;
