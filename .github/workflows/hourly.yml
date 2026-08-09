@@ -93,13 +93,33 @@ jobs:
         run: |
           git config user.name "chartlab-research-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add status/status.json
-          git diff --cached --quiet && exit 0
-          git commit -m "status: tick $(date -u '+%F %H:%M') UTC"
-          # Публичный репозиторий получает и коммиты с кодом, поэтому push
-          # без ребейза однажды упал бы non-fast-forward и уронил тик.
+
+          # Статус — СГЕНЕРИРОВАННЫЙ снимок, а не правка текста: сливать его
+          # не с чем, прав последний писатель. Поэтому здесь не ребейз, а
+          # перестроение поверх свежего origin/main на каждой попытке.
+          #
+          # Ребейз тут уже подводил: при конфликте status.json он вставал с
+          # незакрытыми файлами, а цикл повторов пытался тянуть снова и падал
+          # с «Pulling is not possible because you have unmerged files» —
+          # прерванный ребейз никто не отменял, и все три попытки были
+          # обречены. Такой конфликт возникает всякий раз, когда ночь и тик
+          # заканчиваются рядом.
+          # Статуса может не быть вовсе: прогон мог упасть ДО его записи.
+          # Это не повод ронять ещё и публикацию — жаловаться будет сторож
+          # молчания, а не эта строка.
+          if [ ! -f status/status.json ]; then
+            echo "статус не сформирован — публиковать нечего" >&2
+            exit 0
+          fi
+          cp status/status.json "$RUNNER_TEMP/status.json"
           for attempt in 1 2 3; do
-            git pull --rebase --autostash origin main && git push && exit 0
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            cp "$RUNNER_TEMP/status.json" status/status.json
+            git add status/status.json
+            git diff --cached --quiet && exit 0
+            git commit -q -m "status: tick $(date -u '+%F %H:%M') UTC"
+            git push -q && exit 0
             sleep 5
           done
           echo "не удалось опубликовать статус после трёх попыток" >&2
