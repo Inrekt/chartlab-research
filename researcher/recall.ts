@@ -126,6 +126,24 @@ export interface RecallRow {
   runs: number;
   /** Доля дошедших ДО этих ворот и прошедших их. */
   survived: Record<string, number>;
+  /**
+   * Доля прошедших эти ворота среди ВСЕХ прогонов, независимо от цепочки.
+   *
+   * Отличается от `survived` тем, что не зависит от порядка ворот. В ночном
+   * гаунтлете есть короткое замыкание: упавший на первых воротах до
+   * остальных не доходит, и по одному лишь `survived` нельзя отличить
+   * «ворота мягкие» от «до них никто не добрался». Именно так gate_wilson и
+   * gate_oot за 56 374 испытания не исполнились НИ РАЗУ.
+   */
+  marginal: Record<string, number>;
+  /**
+   * Сколько кандидатов убиты ТОЛЬКО этими воротами (все остальные пройдены).
+   *
+   * Ворота с нулём одиночных убийств не добавляют ничего: всё, что они ловят,
+   * уже поймано соседями. Это и есть цена девяти условий, перемноженных в
+   * одно, — избыточность видна только так.
+   */
+  uniqueKills: Record<string, number>;
   /** Доля прошедших ВСЮ цепочку. */
   fullPass: number;
   /** Ворота, на которых чаще всего умирает настоящий край. */
@@ -159,6 +177,8 @@ export function recallBench(opts: RecallOpts): RecallRow[] {
   for (const delta of opts.deltas) {
     const reached: Record<string, number> = {};
     const passed: Record<string, number> = {};
+    const marginalPass: Record<string, number> = {};
+    const uniqueKills: Record<string, number> = {};
     let fullPass = 0;
 
     for (let r = 0; r < opts.runs; r++) {
@@ -197,11 +217,24 @@ export function recallBench(opts: RecallOpts): RecallRow[] {
         wilson: () => gateWilson(stats, stats.avgRR),
       };
 
+      // Все ворота считаются ВСЕГДА, даже после первого провала. В ночном
+      // гаунтлете есть короткое замыкание — оно экономит вычисления, но
+      // скрывает избыточность: невозможно понять, ловят ли поздние ворота
+      // хоть что-то своё. Здесь ворота дёшевы (сделки синтетические), и
+      // платить нечем.
+      const verdicts = Object.fromEntries(
+        CHAIN.map((name) => [name, gates[name]().pass]),
+      ) as Record<string, boolean>;
+      for (const name of CHAIN) if (verdicts[name]) marginalPass[name] = (marginalPass[name] ?? 0) + 1;
+
+      const failures = CHAIN.filter((n) => !verdicts[n]);
+      if (failures.length === 1) uniqueKills[failures[0]] = (uniqueKills[failures[0]] ?? 0) + 1;
+
       let alive = true;
       for (const name of CHAIN) {
         if (!alive) break;
         reached[name] = (reached[name] ?? 0) + 1;
-        if (gates[name]().pass) passed[name] = (passed[name] ?? 0) + 1;
+        if (verdicts[name]) passed[name] = (passed[name] ?? 0) + 1;
         else alive = false;
       }
       if (alive) fullPass += 1;
@@ -213,10 +246,26 @@ export function recallBench(opts: RecallOpts): RecallRow[] {
     for (const name of CHAIN) {
       survived[name] = reached[name] ? (passed[name] ?? 0) / reached[name] : NaN;
     }
-    const bottleneck =
-      [...CHAIN].filter((n) => reached[n]).sort((a, b) => survived[a] - survived[b])[0] ?? "—";
+    const marginal = Object.fromEntries(
+      CHAIN.map((n) => [n, (marginalPass[n] ?? 0) / opts.runs]),
+    ) as Record<string, number>;
+    const kills = Object.fromEntries(CHAIN.map((n) => [n, uniqueKills[n] ?? 0])) as Record<
+      string,
+      number
+    >;
+    // Узкое место — по МАРГИНАЛЬНОЙ доле: по цепочке первые ворота всегда
+    // выглядят главными просто потому, что стоят первыми.
+    const bottleneck = [...CHAIN].sort((a, b) => marginal[a] - marginal[b])[0] ?? "—";
 
-    rows.push({ delta, runs: opts.runs, survived, fullPass: fullPass / opts.runs, bottleneck });
+    rows.push({
+      delta,
+      runs: opts.runs,
+      survived,
+      marginal,
+      uniqueKills: kills,
+      fullPass: fullPass / opts.runs,
+      bottleneck,
+    });
   }
   return rows;
 }
@@ -265,6 +314,33 @@ async function main(): Promise<void> {
         .join(""),
     );
   }
+  console.error("\n── маргинально: доля прошедших НЕЗАВИСИМО от цепочки ──");
+  console.error(["δ", ...CHAIN].map((s) => String(s).padEnd(12)).join(""));
+  for (const row of rows) {
+    console.error(
+      [row.delta.toFixed(2), ...CHAIN.map((n) => `${(row.marginal[n] * 100).toFixed(0)}%`)]
+        .map((s) => String(s).padEnd(12))
+        .join(""),
+    );
+  }
+
+  console.error("\n── одиночные убийства: сколько раз ворота были ЕДИНСТВЕННОЙ причиной ──");
+  console.error(["δ", ...CHAIN].map((s) => String(s).padEnd(12)).join(""));
+  for (const row of rows) {
+    console.error(
+      [row.delta.toFixed(2), ...CHAIN.map((n) => String(row.uniqueKills[n]))]
+        .map((s) => String(s).padEnd(12))
+        .join(""),
+    );
+  }
+  console.error(
+    "\n⚠️ Читать строго так: ноль одиночных убийств означает, что эти ворота не\n" +
+      "стоят НИЧЕГО в мощности — они не выбрасывают настоящие края. Это НЕ\n" +
+      "означает, что их можно убрать: их работа — резать ЛОЖНЫХ кандидатов, а\n" +
+      "здесь прогоняются только настоящие. Полезность ворот измеряет нуль-\n" +
+      "гаунтлет (selfcheck.ts), этот стенд измеряет их цену.",
+  );
+
   console.error(
     "\nНЕ проверено здесь: нуль-модель, плато, out-of-time — им нужны свечи и\n" +
       "соседи по параметрам. Мощность батареи ЦЕЛИКОМ не выше показанной.",

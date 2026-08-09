@@ -77,6 +77,33 @@ describe("синтетика стенда мощности", () => {
     expect(run(0.6, 0.0158)).toBeGreaterThan(run(0.25, 0.0158));
   });
 
+  test("на настоящих краях в одиночку убивают ТОЛЬКО ворота дефляции", () => {
+    // Прогон без короткого замыкания: в ночном гаунтлете упавший на первых
+    // воротах до остальных не доходит, и по цепочке нельзя отличить «ворота
+    // мягкие» от «до них никто не добрался».
+    const [row] = recallBench({
+      deltas: [0.25],
+      runs: 50,
+      trades: 1000,
+      symbols: 16,
+      years: 5,
+      sigma: 1,
+      nEffective: 8445,
+      varSR: 0.0158,
+      seed: 7,
+    });
+    // Пять из шести ворот не стоят НИЧЕГО в мощности: настоящий край они
+    // пропускают полностью. Вся потеря мощности сидит в одних воротах.
+    for (const gate of ["activity", "breadth", "cost_stress", "temporal", "wilson"]) {
+      expect(row.uniqueKills[gate]).toBe(0);
+      expect(row.marginal[gate]).toBeGreaterThan(0.95);
+    }
+    expect(row.uniqueKills.dsr).toBeGreaterThan(40);
+    // Маргинальная доля не зависит от порядка ворот — в отличие от цепочной.
+    expect(row.marginal.wilson).toBeGreaterThan(0);
+    expect(Number.isNaN(row.survived.wilson)).toBe(true);
+  });
+
   test("узкое место называется честно, а не первым по списку", () => {
     const [row] = recallBench({
       deltas: [0.25],
