@@ -12,6 +12,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { SignalTf } from "./grammar.ts";
 import { runIncubation, type IncubationSummary } from "./incubate.ts";
 import { DB_PATH, DEFAULT_VAULT_DIR } from "./paths.ts";
@@ -20,10 +21,36 @@ import { runScreen, type ScreenSummary } from "./screen.ts";
 import { writeStatus } from "./statusFile.ts";
 import { runSupervision, type SupervisionSummary } from "./supervise.ts";
 import { TrialLedger, STATES } from "./ledger.ts";
+import { DatabaseSync } from "node:sqlite";
+import { calibrateGates } from "./gate-calibration.ts";
 
 const VAULT_DIR = DEFAULT_VAULT_DIR;
 const DIGEST_PATH = join(VAULT_DIR, "Исследователь — дайджест.md");
 const HISTORY_KEEP = 14;
+
+/**
+ * Калибровка ворот для дайджеста. Никогда не бросает: дайджест обязан
+ * писаться и тогда, когда прибор сломан — иначе исчезнет и отчёт, и причина.
+ */
+function gateCalibration(
+  dbPath: string,
+): { gate: string; actual: number; nominal: number | null; inflation: number | null }[] {
+  try {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      return calibrateGates(db).map(({ gate, actual, nominal, inflation }) => ({
+        gate,
+        actual,
+        nominal,
+        inflation,
+      }));
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
 
 function stateCensus(dbPath: string): Record<string, number> {
   const ledger = new TrialLedger(dbPath);
@@ -79,6 +106,33 @@ ${gates || "  - (пусто)"}
 ${diag}`;
 }
 
+/**
+ * Заявленный уровень ворот против фактического.
+ *
+ * ⚠️ Читать с оговоркой, и она в блоке напечатана: номинал относится к НУЛЕВОЙ
+ * популяции, а до поздних ворот доходят только кандидаты, отобранные
+ * предыдущими. Высокая доля прохождения у них — следствие отбора, а не
+ * доказательство мягкости. Проверять калибровку надо неотобранными
+ * кандидатами (`oot-bench --window in`).
+ */
+function calibrationBlock(
+  rows?: { gate: string; actual: number; nominal: number | null; inflation: number | null }[],
+): string {
+  if (!rows || rows.length === 0) return "  - нет данных";
+  const lines = rows.map((r) => {
+    const actual = `${(r.actual * 100).toFixed(1)}%`;
+    const nominal = r.nominal === null ? "—" : `${(r.nominal * 100).toFixed(2)}%`;
+    const infl = r.inflation === null ? "—" : `${r.inflation.toFixed(0)}×`;
+    return `  - ${r.gate}: факт ${actual}, номинал ${nominal}, отношение ${infl}`;
+  });
+  return [
+    ...lines,
+    "",
+    "  Номинал относится к НУЛЕВОЙ популяции; до поздних ворот доходят уже",
+    "  отобранные кандидаты, поэтому высокая доля прохождения у них ожидаема.",
+  ].join("\n");
+}
+
 export function buildDigest(
   date: string,
   screens: ScreenSummary[],
@@ -86,6 +140,15 @@ export function buildDigest(
   supervision: SupervisionSummary,
   census: Record<string, number>,
   history: string[],
+  /**
+   * Калибровка ворот по журналу. Не передана — блок опускается.
+   *
+   * Стоит в дайджесте, а не в отдельной команде, потому что отдельную команду
+   * надо помнить. Цифры воронки не значат ничего, если ворота, которые их
+   * породили, мягче или строже собственной вывески — а это выяснилось только
+   * тогда, когда я специально пошёл смотреть.
+   */
+  calibration?: { gate: string; actual: number; nominal: number | null; inflation: number | null }[],
 ): string {
   const censusLines = Object.entries(census)
     .map(([s, n]) => `  - ${s}: ${n}`)
@@ -120,6 +183,10 @@ ${screens.map(funnelBlock).join("\n\n")}
 - **Выпущено: ${incubation.graduated.length}**${incubation.graduated.length > 0 ? ` → карточки в папке «Карточки»` : ""}
 - Убито инкубатором: ${incubation.killed.length}
 - Под надзором (выпускники): ${supervision.supervised}; деградации: ${supervision.decayed.length}; пенсии: ${supervision.retired.length}
+
+## Калибровка ворот
+
+${calibrationBlock(calibration)}
 
 ## Население журнала
 
@@ -160,7 +227,15 @@ async function main(): Promise<void> {
   mkdirSync(dirname(DIGEST_PATH), { recursive: true });
   writeFileSync(
     DIGEST_PATH,
-    buildDigest(date, screens, incubation, supervision, stateCensus(DB_PATH), history),
+    buildDigest(
+      date,
+      screens,
+      incubation,
+      supervision,
+      stateCensus(DB_PATH),
+      history,
+      gateCalibration(DB_PATH),
+    ),
     "utf-8",
   );
   writeStatus({
@@ -200,20 +275,29 @@ const EMPTY_SUPERVISION: SupervisionSummary = {
   retired: [],
 };
 
-await main().catch((error: unknown) => {
-  const reason = error instanceof Error ? error.message : String(error);
-  console.error(reason);
-  try {
-    writeStatus({
-      screens: [],
-      incubation: EMPTY_INCUBATION,
-      supervision: EMPTY_SUPERVISION,
-      durationMin: null,
-      failure: reason.split("\n")[0],
-    });
-  } catch (writeError) {
-    // Не смогли даже пожаловаться — но исходную причину терять нельзя.
-    console.error(`не удалось записать статус падения: ${String(writeError)}`);
-  }
-  process.exit(1);
-});
+/**
+ * Защита от запуска при ИМПОРТЕ — та же, что у сборщика корпуса.
+ *
+ * Без неё `import { buildDigest }` запускал полную ночь: сеть, часы работы и
+ * запись в журнал. Именно поэтому у дайджеста и не было теста — его нельзя
+ * было написать, не прогнав ночь.
+ */
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  await main().catch((error: unknown) => {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error(reason);
+    try {
+      writeStatus({
+        screens: [],
+        incubation: EMPTY_INCUBATION,
+        supervision: EMPTY_SUPERVISION,
+        durationMin: null,
+        failure: reason.split("\n")[0],
+      });
+    } catch (writeError) {
+      // Не смогли даже пожаловаться — но исходную причину терять нельзя.
+      console.error(`не удалось записать статус падения: ${String(writeError)}`);
+    }
+    process.exit(1);
+  });
+}
