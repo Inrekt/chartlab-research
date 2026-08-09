@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-08T23:39:03.514Z",
+  "generatedAt": "2026-08-09T04:40:08.806Z",
   "run": {
     "durationMin": 0,
     "nextNightUtc": "2026-08-09T21:37:00.000Z",
-    "lastTickUtc": "2026-08-08T23:39:03.514Z"
+    "lastTickUtc": "2026-08-09T04:40:08.806Z"
   },
   "ledger": {
     "trials": 56374,
@@ -13,6 +13,35 @@
       "REJECTED": 56374
     }
   },
+  "sources": {
+    "feeds": [
+      {
+        "name": "funding",
+        "files": 157,
+        "required": 50,
+        "ok": true
+      },
+      {
+        "name": "metrics-1h",
+        "files": 156,
+        "required": 50,
+        "ok": true
+      },
+      {
+        "name": "корпус свечей",
+        "files": 0,
+        "required": 100,
+        "ok": false
+      }
+    ],
+    "corpus": {
+      "newestBar": null,
+      "ageDays": null,
+      "laggingSymbols": 0,
+      "level": "unknown"
+    }
+  },
+  "failure": null,
   "universes": [
     {
       "tf": "1h",
