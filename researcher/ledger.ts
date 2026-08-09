@@ -182,6 +182,42 @@ export class TrialLedger {
     ] as const) {
       if (!columns.has(name)) this.db.exec(ddl);
     }
+
+    /**
+     * Карантин отравленных эпох (v3).
+     *
+     * Задача, которую он решает. Авария инфраструктуры (не было каталога с
+     * фандингом) записала 216 испытаний funding_pressure с нулём сделок. Сами
+     * записи честны — их удалять нельзя и не нужно. Но сэмплер исключает из
+     * выдачи ВСЁ, что когда-либо подавалось, и потому эти 216 комбинаций
+     * оказались помечены как проверенные НАВСЕГДА — вердиктом, который
+     * измерением не является. Семейство стёрто из поиска не рынком, а багом.
+     *
+     * Карантин — не удаление и не переписывание истории: это отдельная
+     * append-only запись «вот эти испытания не были измерением», после которой
+     * сэмплер снова вправе их предложить.
+     *
+     * ⚠️ На счётчик множественности карантин НЕ влияет намеренно. Соблазн
+     * «раз это не измерение, пусть и планку не поднимает» ведёт прямо к
+     * подкрутке неприкасаемых ворот через задний двор: любую неудобную партию
+     * можно объявить отравленной. Планка остаётся выше, чем строго нужно, —
+     * это консервативная сторона ошибки, и мы выбираем её сознательно.
+     */
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS quarantine (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        setup_family TEXT NOT NULL,
+        from_iso TEXT NOT NULL,
+        to_iso TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TRIGGER IF NOT EXISTS quarantine_append_only BEFORE UPDATE ON quarantine
+      BEGIN SELECT RAISE(ABORT, 'quarantine is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS quarantine_no_delete BEFORE DELETE ON quarantine
+      BEGIN SELECT RAISE(ABORT, 'quarantine is append-only'); END;
+    `);
+
     this.db
       .prepare("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '2')")
       .run();
@@ -392,6 +428,60 @@ export class TrialLedger {
       candidate_id: string;
     }[];
     return new Set(rows.map((r) => r.candidate_id));
+  }
+
+  /**
+   * Объявить эпоху семейства отравленной: её испытания перестают закрывать
+   * соответствующие комбинации для будущих партий.
+   *
+   * Границы задаются датами, а не списком id, намеренно: причина всегда
+   * временна́я («в этот период не было источника»), и перечисление id
+   * позволило бы вычеркнуть отдельные НЕУДОБНЫЕ испытания, а это уже подгонка.
+   */
+  quarantineEpoch(setupFamily: string, fromIso: string, toIso: string, reason: string): number {
+    this.db
+      .prepare(
+        "INSERT INTO quarantine(setup_family, from_iso, to_iso, reason, created_at) VALUES(?,?,?,?,?)",
+      )
+      .run(setupFamily, fromIso, toIso, reason, this.now());
+    return this.quarantinedIds().size;
+  }
+
+  /** Испытания, попавшие под карантин. */
+  quarantinedIds(): Set<string> {
+    const rows = this.db
+      .prepare(
+        `SELECT t.candidate_id FROM trials t JOIN quarantine q
+           ON t.setup_family = q.setup_family
+          AND t.created_at >= q.from_iso
+          AND t.created_at <= q.to_iso`,
+      )
+      .all() as { candidate_id: string }[];
+    return new Set(rows.map((r) => r.candidate_id));
+  }
+
+  /**
+   * Что сэмплер обязан НЕ выдавать повторно. Отличается от `allCandidateIds`
+   * ровно на карантин: отравленное испытание измерением не было, и закрывать
+   * им комбинацию навсегда — значит терять гипотезу из-за поломки, а не из-за
+   * рынка.
+   */
+  resamplableExclusions(): Set<string> {
+    const all = this.allCandidateIds();
+    for (const id of this.quarantinedIds()) all.delete(id);
+    return all;
+  }
+
+  /** Активные записи карантина — для отчёта и статуса. */
+  quarantines(): { setupFamily: string; fromIso: string; toIso: string; reason: string }[] {
+    return (
+      this.db.prepare("SELECT * FROM quarantine ORDER BY id").all() as Record<string, unknown>[]
+    ).map((r) => ({
+      setupFamily: String(r.setup_family),
+      fromIso: String(r.from_iso),
+      toIso: String(r.to_iso),
+      reason: String(r.reason),
+    }));
   }
 
   /** N для дефляции: сырое число попыток и число кластеров (N_eff). */

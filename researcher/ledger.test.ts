@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { sampleCandidates } from "./grammar.ts";
+import { sampleCandidates, setupFamily } from "./grammar.ts";
 import { TrialLedger } from "./ledger.ts";
 
 let ledger: TrialLedger;
@@ -79,6 +79,49 @@ describe("registration", () => {
       gateVersion: null,
       corpusVersion: null,
     });
+  });
+
+  test("карантин возвращает отравленные комбинации в поиск, не трогая журнал", () => {
+    // Авария COLLECT_DIR записала 216 испытаний funding_pressure с нулём
+    // сделок. Записи честны, удалять их нельзя. Но сэмплер исключает всё
+    // когда-либо поданное — и эти комбинации оказались закрыты НАВСЕГДА
+    // вердиктом, который измерением не был. Семейство стёрли не рынком, а багом.
+    ledger.registerCandidates(specs.slice(0, 5));
+    const rows = ledger.byState("CANDIDATE");
+    const family = setupFamily(ledger.getTrial(rows[0]!.candidateId)!.spec.setup);
+
+    expect(ledger.resamplableExclusions().size).toBe(ledger.allCandidateIds().size);
+
+    ledger.quarantineEpoch(
+      family,
+      "1970-01-01T00:00:00.000Z",
+      "2100-01-01T00:00:00.000Z",
+      "нет каталога фандинга на раннере",
+    );
+
+    // Журнал НЕ уменьшился — карантин это запись, а не удаление.
+    expect(ledger.counts().trials).toBe(5);
+    expect(ledger.allCandidateIds().size).toBe(5);
+    // А сэмплеру эти комбинации снова доступны.
+    expect(ledger.resamplableExclusions().size).toBeLessThan(5);
+    expect(ledger.quarantines()[0]!.reason).toMatch(/фандинг/);
+  });
+
+  test("карантин append-only: переписать и удалить нельзя", () => {
+    ledger.registerCandidates(specs.slice(0, 2));
+    ledger.quarantineEpoch("x", "2020-01-01", "2020-12-31", "тест");
+    const raw = (ledger as unknown as { db: import("node:sqlite").DatabaseSync }).db;
+    expect(() => raw.exec("UPDATE quarantine SET reason = 'другое'")).toThrow(/append-only/);
+    expect(() => raw.exec("DELETE FROM quarantine")).toThrow(/append-only/);
+  });
+
+  test("карантин ограничен окном дат, а не списком id", () => {
+    // Перечисление id позволило бы вычеркнуть отдельные НЕУДОБНЫЕ испытания —
+    // это была бы подгонка. Причина отравления всегда временна́я.
+    ledger.registerCandidates(specs.slice(0, 3));
+    const family = setupFamily(ledger.getTrial(ledger.byState("CANDIDATE")[0]!.candidateId)!.spec.setup);
+    ledger.quarantineEpoch(family, "1990-01-01", "1990-12-31", "окно в прошлом");
+    expect(ledger.quarantinedIds().size).toBe(0);
   });
 
   test("counts clusters distinctly for DSR N_eff", () => {

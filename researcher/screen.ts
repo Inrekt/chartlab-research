@@ -329,7 +329,11 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   markEpoch(opts.dbPath);
   const excludeBehavioral = behavioralExclusionFor(opts.dbPath, opts.tf);
   const sampling = {} as SampleDiagnostics;
-  const specs = sampleCandidates(opts.seed, opts.n, ledger.allCandidateIds(), {
+  // resamplable, а НЕ all: испытания отравленной эпохи (авария источника
+  // данных) измерением не были, и закрывать ими комбинации навсегда значит
+  // терять гипотезы из-за поломки инфраструктуры, а не из-за рынка. На
+  // счётчик множественности карантин намеренно не влияет — см. ledger.migrate.
+  const specs = sampleCandidates(opts.seed, opts.n, ledger.resamplableExclusions(), {
     tf: opts.tf,
     excludeBehavioral,
     diagnostics: sampling,
