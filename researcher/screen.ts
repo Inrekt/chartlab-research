@@ -67,6 +67,7 @@ import {
   gatePlateau,
   gateTemporal,
   gateWilson,
+  fullYearsIn,
   type GateResult,
   type SymbolNet,
 } from "./gates.ts";
@@ -299,6 +300,30 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   const slippage = buildSlippageTable(opts.tf, universe, (symbol) =>
     loadCandlesWindow(symbol, opts.tf, "in"),
   );
+
+  /**
+   * Границы окна поиска — для ворот времени. Считаются по КОРПУСУ, а не по
+   * сделкам кандидата: полнота года это свойство данных. Кандидат, торговавший
+   * только в январе полного года, этот год всё равно имел.
+   */
+  const corpusSpan = (() => {
+    let fromSec = Infinity;
+    let toSec = -Infinity;
+    for (const symbol of universe) {
+      const candles = loadCandlesWindow(symbol, opts.tf, "in");
+      if (!candles || candles.length === 0) continue;
+      fromSec = Math.min(fromSec, candles[0].time);
+      toSec = Math.max(toSec, candles[candles.length - 1].time);
+    }
+    return Number.isFinite(fromSec) && toSec > fromSec ? { fromSec, toSec } : undefined;
+  })();
+  if (corpusSpan) {
+    const full = fullYearsIn(corpusSpan.fromSec, corpusSpan.toSec);
+    log(
+      `окно поиска: ${new Date(corpusSpan.fromSec * 1000).toISOString().slice(0, 10)} … ` +
+        `${new Date(corpusSpan.toSec * 1000).toISOString().slice(0, 10)}, полных лет ${full.size}`,
+    );
+  }
   const restoreCosts = setActiveCosts({
     feeRate: DEFAULT_COSTS.feeRate,
     slippageRate: DEFAULT_COSTS.slippageRate,
@@ -663,7 +688,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   const { clusters: nEffective } = ledger.counts();
   const validated: ScreenSummary["validated"] = [];
   for (const f of finalists) {
-    if (!applyGate("gate_temporal", f, gateTemporal(f.trades))) continue;
+    if (!applyGate("gate_temporal", f, gateTemporal(f.trades, corpusSpan))) continue;
     const netRs = netRMultiples(f.trades);
     // Вердикт — по очищенной оценке; наивная пишется рядом для сравнимости
     // ночей и обратимости перехода.

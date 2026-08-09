@@ -182,18 +182,67 @@ export const MIN_POSITIVE_YEARS = 3;
 export const MIN_COVERED_YEARS = 4;
 export const WF_MIN_CONSISTENCY = 0.5;
 
-export function gateTemporal(allTrades: readonly TradeResult[]): GateResult {
+/**
+ * Год считается ПОЛНЫМ, если корпус покрывает его хотя бы столько дней.
+ * 300 — не круглое число из головы: замеренные обрубки окна это 114 дней
+ * (2019) и 212 (2025), а все полные — 365–366. Порог лежит в пустом
+ * промежутке между этими группами.
+ */
+export const FULL_YEAR_MIN_DAYS = 300;
+
+/** Календарные годы, покрытые окном корпуса не меньше чем на FULL_YEAR_MIN_DAYS. */
+export function fullYearsIn(fromSec: number, toSec: number): Set<number> {
+  const out = new Set<number>();
+  if (!(toSec > fromSec)) return out;
+  const first = new Date(fromSec * 1000).getUTCFullYear();
+  const last = new Date(toSec * 1000).getUTCFullYear();
+  for (let y = first; y <= last; y++) {
+    const start = Math.max(fromSec, Date.UTC(y, 0, 1) / 1000);
+    const end = Math.min(toSec, Date.UTC(y + 1, 0, 1) / 1000);
+    if ((end - start) / 86_400 >= FULL_YEAR_MIN_DAYS) out.add(y);
+  }
+  return out;
+}
+
+/**
+ * @param corpusSpan границы окна корпуса. Заданы — обрубки лет не голосуют:
+ * год в 114 дней может стать «прибыльным» с одной удачной сделки, и кандидат
+ * с тремя честными плюсовыми годами проходил или падал из-за месяца данных на
+ * краю окна. Полнота года — свойство КОРПУСА, а не кандидата, поэтому
+ * приходит извне: торговавший только в январе полного года этот год имел.
+ * Пре-регистрация: docs/temporal-stub-years-preregistration.md.
+ */
+export function gateTemporal(
+  allTrades: readonly TradeResult[],
+  corpusSpan?: { fromSec: number; toSec: number },
+): GateResult {
   // NET-сделки: на брутто год «плюс 2R» при издержках 0.1R/сделку на деле
   // бывает минусовым, и оба порога ворот мягче заявленных (поймано ревизией —
   // все остальные ворота считают после издержек, это обязано тоже).
   const netTrades = allTrades.map((t) => ({ ...t, rMultiple: t.rMultiple - tradeCostInR(t) }));
-  const byYear = profitByYear(netTrades);
+  const all = profitByYear(netTrades);
+  const full = corpusSpan ? fullYearsIn(corpusSpan.fromSec, corpusSpan.toSec) : null;
+
+  // Дефект КОРПУСА, а не приговор кандидату. На спотовом окне (2021-07…2025-07)
+  // полных лет всего три, и без этой ветки ворота молча отвергали бы всех «по
+  // существу», хотя причина — короткая история.
+  if (full && full.size < MIN_COVERED_YEARS) {
+    return fail(
+      `время: в КОРПУСЕ лишь ${full.size} полных лет < ${MIN_COVERED_YEARS} — ` +
+        "это нехватка истории, а не свойство кандидата",
+      { fullYearsInCorpus: full.size, corpusTooShort: true },
+    );
+  }
+
+  const byYear = full ? new Map([...all].filter(([y]) => full.has(y))) : all;
   const covered = byYear.size;
   const positive = [...byYear.values()].filter((v) => v > 0).length;
   const wf = runWalkForward(netTrades);
   const metrics = {
     coveredYears: covered,
     positiveYears: positive,
+    // Сколько лет отброшено как обрубки — чтобы отказ был читаем без догадок.
+    stubYearsDropped: full ? all.size - byYear.size : 0,
     wfVerdict: wf.verdict,
     wfConsistency: Number(wf.consistency.toFixed(3)),
   };

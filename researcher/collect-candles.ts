@@ -459,6 +459,33 @@ async function main(): Promise<void> {
 
   mkdirSync(outDir, { recursive: true });
 
+  /**
+   * Пересборка манифеста по СОДЕРЖИМОМУ каталога, без единого запроса в сеть.
+   *
+   * Нужен, потому что манифест умеет расходиться с каталогом: у живого корпуса
+   * он заявлял 162 символа при 361 файле — остаток ранней сборки по всей
+   * вселенной. Поиск при этом идёт по файлам, а версия корпуса в журнал
+   * пишется из манифеста, то есть испытания помечались размером вселенной,
+   * которого не было. Предполётная проверка теперь это ловит и присылает сюда.
+   */
+  if (argv.includes("--scan")) {
+    const scanned = scanCorpus(outDir);
+    const manifest: CorpusManifest = {
+      source: MARKET_OF[source],
+      via: source,
+      generatedAt: new Date().toISOString(),
+      tfs: [...new Set(scanned.map((c) => c.tf))],
+      symbols: new Set(scanned.map((c) => c.symbol)).size,
+      coverage: scanned,
+    };
+    writeFileSync(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 1));
+    console.error(
+      `манифест пересобран по каталогу: символов ${manifest.symbols}, файлов ${scanned.length}`,
+    );
+    console.log(JSON.stringify({ scanned: scanned.length, symbols: manifest.symbols, outDir }));
+    return;
+  }
+
   let symbols = only ?? (await fetchUniverse(source));
 
   /**

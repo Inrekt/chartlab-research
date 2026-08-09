@@ -18,7 +18,7 @@
  *   нет файла у одного символа  → у символа нет истории, сделок не будет, ок;
  *   нет каталога / он пуст      → мы не измеряем то, что думаем, что измеряем.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { klinesUrlFromCorpus, marketIsAssumed } from "./binance.ts";
 import { HISTORY_DIR, corpusFreshness, corpusVersion } from "./corpus.ts";
@@ -173,6 +173,46 @@ export function corpusFreshnessVerdict(now = Date.now()): FreshnessVerdict {
 }
 
 /**
+ * Манифест обязан описывать ТОТ каталог, рядом с которым лежит.
+ *
+ * Найдено на живом корпусе: манифест заявлял 162 символа, а файлов в каталоге
+ * было 361 — лишние остались от ранней сборки по всей живой вселенной. Поиск
+ * при этом идёт по ФАЙЛАМ (`listUniverse`), а в журнал пишется версия из
+ * МАНИФЕСТА. То есть испытания помечались размером вселенной, которого не
+ * было, и сравнивать их между эпохами стало нельзя.
+ *
+ * Расхождение не роняет ничего и нигде не печатается — шестой за два дня
+ * случай тихой рассогласованности, поэтому проверка отдельная и явная.
+ */
+export function manifestMatchesCorpus(historyDir = corpusRoot()): {
+  ok: boolean;
+  manifest: number;
+  onDisk: number;
+} {
+  const onDisk = new Set<string>();
+  try {
+    for (const f of readdirSync(historyDir)) {
+      const m = /^(.+)_(1h|4h|1d)\.json\.gz$/.exec(f);
+      if (m) onDisk.add(m[1]);
+    }
+  } catch {
+    return { ok: true, manifest: 0, onDisk: 0 }; // каталога нет — судить не о чем
+  }
+  if (onDisk.size === 0) return { ok: true, manifest: 0, onDisk: 0 };
+
+  let manifest = 0;
+  try {
+    const raw = JSON.parse(
+      readFileSync(join(historyDir, "manifest.json"), "utf8"),
+    ) as { coverage?: { symbol: string }[] };
+    manifest = new Set((raw.coverage ?? []).map((c) => c.symbol)).size;
+  } catch {
+    return { ok: true, manifest: 0, onDisk: onDisk.size }; // манифеста нет — другая проверка
+  }
+  return { ok: manifest === onDisk.size, manifest, onDisk: onDisk.size };
+}
+
+/**
  * Печатает рынок живых баров рядом с версией корпуса.
  *
  * Существует потому, что эти две настройки уже разъезжались молча: путь к
@@ -225,6 +265,27 @@ export function assertDataSources(opts: PreflightOptions = {}): void {
         "по фактическому содержимому каталога.",
       ].join("\n"),
     );
+  }
+
+  // Манифест против каталога — до всего остального: если они разошлись, любые
+  // дальнейшие числа помечены неверной версией корпуса.
+  if (requireCorpusFiles) {
+    const match = manifestMatchesCorpus();
+    if (!match.ok) {
+      throw new Error(
+        [
+          "Предполётная проверка: манифест не описывает свой каталог.",
+          `  в манифесте символов: ${match.manifest}`,
+          `  файлов в каталоге:    ${match.onDisk}`,
+          "",
+          "Поиск идёт по ФАЙЛАМ, а версия корпуса в журнал пишется из МАНИФЕСТА.",
+          "Значит испытания были бы помечены размером вселенной, которого нет, и",
+          "сравнивать их между эпохами стало бы нельзя.",
+          "",
+          "Чинить: npx tsx researcher/collect-candles.ts --scan --out <каталог>",
+        ].join("\n"),
+      );
+    }
   }
 
   const fresh = corpusFreshnessVerdict();

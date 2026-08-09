@@ -40,7 +40,14 @@ function fakeCorpus(n: number, lastIso?: string): string {
       JSON.stringify({
         source: "perp",
         symbols: n,
-        coverage: [{ symbol: "BTCUSDT", tf: "1h", firstIso: "2019-09-08T00:00:00.000Z", lastIso }],
+        // Покрытие обязано перечислять ВСЕ символы каталога — иначе проверка
+        // соответствия манифеста каталогу справедливо ругается.
+        coverage: Array.from({ length: n }, (_, i) => ({
+          symbol: `SYM${i}`,
+          tf: "1h",
+          firstIso: "2019-09-08T00:00:00.000Z",
+          lastIso,
+        })),
       }),
     );
   }
@@ -235,5 +242,43 @@ describe("каталога корпуса нет вовсе — облачный
     expect(() => corpusVersion(gone)).not.toThrow();
     expect(corpusVersion(gone)).toContain(":0:");
     expect(listUniverse("1h", gone)).toEqual([]);
+  });
+});
+
+describe("манифест обязан описывать свой каталог", () => {
+  it("расхождение ловится: поиск идёт по файлам, версия пишется из манифеста", () => {
+    // Найдено на живом корпусе: манифест заявлял 162 символа при 361 файле —
+    // остаток ранней сборки. Испытания помечались размером вселенной, которого
+    // не было, и сравнивать их между эпохами стало нельзя. Ничего при этом не
+    // падало и нигде не печаталось.
+    const root = fakeRoot({ funding: 60, "metrics-1h": 60 });
+    process.env.COLLECT_DIR = root;
+    const corpus = fakeCorpus(120, daysAgo(1)); // манифест описывает 120 символов
+    // Дописываем файлы, которых в манифесте нет.
+    for (let i = 0; i < 30; i++) writeFileSync(join(corpus, `EXTRA${i}_1h.json.gz`), "");
+
+    expect(() => assertDataSources()).toThrow(/манифест не описывает свой каталог/);
+    expect(() => assertDataSources()).toThrow(/--scan/);
+    rmSync(root, { recursive: true, force: true });
+    rmSync(corpus, { recursive: true, force: true });
+  });
+
+  it("совпадение проходит молча", () => {
+    const root = fakeRoot({ funding: 60, "metrics-1h": 60 });
+    process.env.COLLECT_DIR = root;
+    const corpus = fakeCorpus(120, daysAgo(1));
+    expect(() => assertDataSources()).not.toThrow();
+    rmSync(root, { recursive: true, force: true });
+    rmSync(corpus, { recursive: true, force: true });
+  });
+
+  it("часовой тик этой проверкой не связан — он корпус не читает", () => {
+    const root = fakeRoot({ funding: 60, "metrics-1h": 60 });
+    process.env.COLLECT_DIR = root;
+    const corpus = fakeCorpus(120, daysAgo(1));
+    for (let i = 0; i < 30; i++) writeFileSync(join(corpus, `EXTRA${i}_1h.json.gz`), "");
+    expect(() => assertDataSources({ requireCorpusFiles: false })).not.toThrow();
+    rmSync(root, { recursive: true, force: true });
+    rmSync(corpus, { recursive: true, force: true });
   });
 });

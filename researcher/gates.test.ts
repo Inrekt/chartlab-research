@@ -8,6 +8,7 @@ import {
   gateNull,
   gatePlateau,
   gateTemporal,
+  fullYearsIn,
   gateWilson,
   type SymbolNet,
 } from "./gates.ts";
@@ -195,5 +196,62 @@ describe("neighborSpecs", () => {
       );
       expect(diffs).toHaveLength(1);
     }
+  });
+});
+
+describe("огрызки лет не голосуют в воротах времени", () => {
+  const trade = (iso: string, r: number): TradeResult =>
+    ({
+      symbol: "X",
+      direction: "long",
+      entryTime: Date.parse(iso) / 1000,
+      exitTime: Date.parse(iso) / 1000 + 3600,
+      entryPrice: 100,
+      stopPrice: 98,
+      targetPrice: 104,
+      rMultiple: r,
+      won: r > 0,
+      barsHeld: 1,
+    }) as TradeResult;
+
+  test("год определяется по КОРПУСУ, а не по сделкам кандидата", () => {
+    // Полнота года — свойство данных. Кандидат, торговавший только в январе
+    // полного года, этот год всё равно имел, и отбирать его за это нельзя.
+    const full = fullYearsIn(Date.parse("2019-09-08") / 1000, Date.parse("2025-07-31") / 1000);
+    expect([...full].sort()).toEqual([2020, 2021, 2022, 2023, 2024]);
+    // 2019 (114 дней) и 2025 (212) — обрубки, замеренные по фактическому окну.
+    expect(full.has(2019)).toBe(false);
+    expect(full.has(2025)).toBe(false);
+  });
+
+  test("обрубок не может дать «прибыльный год» — правка только ужесточает", () => {
+    // Три полных года в плюсе плюс обрубок в плюсе: раньше это давало
+    // positive=4, теперь 3. Ворота не должны становиться МЯГЧЕ ни в одном
+    // случае — выбрасывание наблюдений не может помочь пройти.
+    const span = { fromSec: Date.parse("2019-09-08") / 1000, toSec: Date.parse("2025-07-31") / 1000 };
+    const trades = [
+      trade("2019-10-01T00:00:00Z", 5), // обрубок, плюс
+      trade("2020-06-01T00:00:00Z", 5),
+      trade("2021-06-01T00:00:00Z", 5),
+      trade("2022-06-01T00:00:00Z", 5),
+      trade("2023-06-01T00:00:00Z", -5),
+      trade("2024-06-01T00:00:00Z", -5),
+    ];
+    const withSpan = gateTemporal(trades, span);
+    expect(withSpan.metrics.positiveYears).toBe(3);
+    expect(withSpan.metrics.stubYearsDropped).toBe(1);
+    // Без границ окна поведение прежнее — обратная совместимость.
+    expect(gateTemporal(trades).metrics.positiveYears).toBe(4);
+  });
+
+  test("короткий КОРПУС — дефект данных, а не приговор кандидату", () => {
+    // Спотовое окно 2021-07…2025-07 содержит всего три полных года. Без этой
+    // ветки ворота молча отвергали бы всех «по существу», хотя причина —
+    // короткая история. Ровно тот класс ошибок, что встречался пять раз.
+    const span = { fromSec: Date.parse("2021-07-11") / 1000, toSec: Date.parse("2025-07-31") / 1000 };
+    const res = gateTemporal([trade("2022-06-01T00:00:00Z", 5)], span);
+    expect(res.pass).toBe(false);
+    expect(res.reason).toContain("нехватка истории");
+    expect(res.metrics.corpusTooShort).toBe(true);
   });
 });
