@@ -205,3 +205,35 @@ describe("требования различаются по точкам вход
     rmSync(corpus, { recursive: true, force: true });
   });
 });
+
+describe("каталога корпуса нет вовсе — облачный промах кэша", () => {
+  it("часовой тик не падает: он корпус не читает", () => {
+    // Воспроизводит аварию 2026-08-09T02:23Z. `actions/cache/restore` на
+    // промахе кэша каталога НЕ СОЗДАЁТ, и readdirSync бросал ENOENT из
+    // запасной ветки corpusVersion — то есть ИЗ БЛОКА catch, который и должен
+    // был это ловить. Тик упал из-за корпуса, который ему не нужен.
+    const root = fakeRoot({ funding: 60, "metrics-1h": 60 });
+    process.env.COLLECT_DIR = root;
+    const gone = mkdtempSync(join(tmpdir(), "preflight-gone-"));
+    rmSync(gone, { recursive: true, force: true });
+    process.env.RESEARCHER_HISTORY_DIR = gone;
+
+    expect(() => assertDataSources({ requireCorpusFiles: false })).not.toThrow();
+    // А ночь обязана упасть: она по корпусу СЧИТАЕТ.
+    expect(() => assertDataSources()).toThrow(/корпус свечей/);
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("версия корпуса отвечает всегда — «не знаю» это тоже ответ", async () => {
+    // Контракт: функция, описывающая происхождение данных, НЕ БРОСАЕТ никогда.
+    // Именно исключение отсюда и уронило тик. Конкретная метка вторична —
+    // важно, что вызывающий получает ответ и видит ноль символов.
+    const gone = mkdtempSync(join(tmpdir(), "corpus-gone-"));
+    rmSync(gone, { recursive: true, force: true });
+    const { corpusVersion, listUniverse } = await import("./corpus.ts");
+    expect(() => corpusVersion(gone)).not.toThrow();
+    expect(corpusVersion(gone)).toContain(":0:");
+    expect(listUniverse("1h", gone)).toEqual([]);
+  });
+});

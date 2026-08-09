@@ -49,6 +49,12 @@ function safeFilename(symbol: string): string {
 /** Все символы, у которых в корпусе есть файл данного таймфрейма. */
 export function listUniverse(tf: SignalTf, historyDir = HISTORY_DIR): string[] {
   const suffix = `_${tf}.json.gz`;
+  // Каталога может не быть вовсе — в облаке корпус живёт в кэше раннера, и на
+  // промахе кэша `actions/cache/restore` каталог не создаёт. «Корпуса нет» —
+  // законное состояние (часовой тик его не читает), и отвечать на него
+  // исключением значит ронять того, кто просто спросил состав вселенной.
+  // Тот, кому корпус НУЖЕН, ловит пустоту предполётной проверкой.
+  if (!existsSync(historyDir)) return [];
   return readdirSync(historyDir)
     .filter((f) => f.endsWith(suffix))
     .map((f) => f.slice(0, -suffix.length))
@@ -99,7 +105,18 @@ export function corpusVersion(historyDir = HISTORY_DIR): string {
   } catch {
     // Манифеста нет — корпус собран не нашим сборщиком. Это тоже факт,
     // и его надо записать честно, а не подставить пустоту.
-    return `nomanifest:${listUniverse("1h", historyDir).length}:unknown`;
+    //
+    // ⚠️ Второй try обязателен, и это не перестраховка: раньше запасная ветка
+    // сама бросала (каталога корпуса могло не быть вовсе — в облаке он живёт
+    // в кэше раннера, а на промахе кэша `actions/cache/restore` каталога не
+    // создаёт). Исключение из блока catch наружу и уронило часовой тик, хотя
+    // корпус ему не нужен. Функция, описывающая происхождение данных, обязана
+    // отвечать всегда — «не знаю» это тоже ответ.
+    try {
+      return `nomanifest:${listUniverse("1h", historyDir).length}:unknown`;
+    } catch {
+      return "nocorpus:0:unknown";
+    }
   }
 }
 
