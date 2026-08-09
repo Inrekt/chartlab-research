@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-09T07:28:19.154Z",
+  "generatedAt": "2026-08-09T07:49:36.496Z",
   "run": {
     "durationMin": 0,
     "nextNightUtc": "2026-08-09T21:37:00.000Z",
-    "lastTickUtc": "2026-08-09T07:28:19.154Z"
+    "lastTickUtc": "2026-08-09T07:49:36.496Z"
   },
   "ledger": {
     "trials": 56374,
@@ -29,15 +29,15 @@
       },
       {
         "name": "корпус свечей",
-        "files": 518,
+        "files": 314,
         "required": 100,
         "ok": true
       }
     ],
     "corpus": {
       "newestBar": "2026-08-07T23:00:00.000Z",
-      "ageDays": 1.35,
-      "laggingSymbols": 9,
+      "ageDays": 1.37,
+      "laggingSymbols": 3,
       "level": "ok"
     }
   },
