@@ -774,6 +774,39 @@ const RANGE_SWEEP2_SETUPS: readonly SetupDef[] = RANGE_SWEEP_BARS.flatMap((bars)
   }),
 );
 
+/*
+ * ── Свип v3: вход ПЕРВОЙ версии плюс сопровождение ───────────────────────────
+ *
+ * Единственная непроверенная комбинация. v1 гонялась с фильтром «цель
+ * существует», но без сопровождения (движок его не умел). v2 — с
+ * сопровождением, но без фильтра, и оказалась ХУЖЕ: матожидание до издержек
+ * ушло с +0.0245R на −0.0360R. То есть фильтр нёс информацию, а я поменял в
+ * одном опыте две вещи сразу и не смог сказать, что на что повлияло.
+ *
+ * v3 исправляет это единственно честным способом: берёт вход v1 БЕЗ ЕДИНОГО
+ * изменения и добавляет ровно одну новую вещь — сопровождение.
+ *
+ * Вход не копируется, а ПЕРЕИСПОЛЬЗУЕТСЯ (`build` первой версии), чтобы он
+ * физически не мог разойтись при будущих правках: копия рано или поздно
+ * разъезжается молча, и тогда сравнение v1 против v3 перестанет быть
+ * сравнением одной переменной.
+ */
+const rangeSweep3Id = (bars: number) => `rangesweep3_b${bars}`;
+const RANGE_SWEEP3_PARAMS = new Map<string, number>();
+
+const RANGE_SWEEP3_SETUPS: readonly SetupDef[] = RANGE_SWEEP_SETUPS.map((v1) => {
+  const bars = RANGE_SWEEP_PARAMS.get(v1.id)!;
+  const id = rangeSweep3Id(bars);
+  RANGE_SWEEP3_PARAMS.set(id, bars);
+  return {
+    ...v1,
+    id,
+    family: "range_sweep_v3",
+    whoPays: v1.whoPays,
+    // build берётся у v1 как есть — см. комментарий выше.
+  };
+});
+
 export const SETUPS: readonly SetupDef[] = [
   ...BASE_SETUPS,
   ...LIQUIDITY_SETUPS,
@@ -781,6 +814,7 @@ export const SETUPS: readonly SetupDef[] = [
   ...FUNDING_PRESSURE_SETUPS,
   ...RANGE_SWEEP_SETUPS,
   ...RANGE_SWEEP2_SETUPS,
+  ...RANGE_SWEEP3_SETUPS,
 ];
 
 /**
@@ -800,6 +834,16 @@ export function setupNeighbors(setupId: string): string[] {
       .map((d) => RANGE_SWEEP_BARS[i + d])
       .filter((v): v is (typeof RANGE_SWEEP_BARS)[number] => v !== undefined)
       .map((v) => `rangesweep_b${v}`);
+  }
+
+  // Соседи v3 — та же единственная ось, что и у v1.
+  const rs3 = RANGE_SWEEP3_PARAMS.get(setupId);
+  if (rs3 !== undefined) {
+    const i = RANGE_SWEEP_BARS.indexOf(rs3 as (typeof RANGE_SWEEP_BARS)[number]);
+    return [-1, 1]
+      .map((d) => RANGE_SWEEP_BARS[i + d])
+      .filter((v): v is (typeof RANGE_SWEEP_BARS)[number] => v !== undefined)
+      .map((v) => rangeSweep3Id(v));
   }
 
   // Соседи v2 — по той же единственной варьируемой оси (длина окна), внутри
@@ -857,7 +901,7 @@ export function setupNeighbors(setupId: string): string[] {
 export function exitsFor(setupId: string): readonly ExitSpec[] {
   // Свип боковика выходит ПО ЛИКВИДНОСТИ, как и магнит: цель — столб, а не
   // фиксированное R. Общий пул выходов здесь не подошёл бы по смыслу.
-  if (LIQ_PARAMS.has(setupId) || RANGE_SWEEP_PARAMS.has(setupId) || RANGE_SWEEP2_PARAMS.has(setupId))
+  if (LIQ_PARAMS.has(setupId) || RANGE_SWEEP_PARAMS.has(setupId) || RANGE_SWEEP2_PARAMS.has(setupId) || RANGE_SWEEP3_PARAMS.has(setupId))
     return LIQUIDITY_EXITS;
   const own = SETUPS.find((s) => s.id === setupId)?.exits;
   return own ?? EXITS;
@@ -1236,7 +1280,9 @@ export function toStrategyConfig(spec: CandidateSpec): StrategyConfig {
       // показал, что результат к уровню частичного тейка нечувствителен
       // (0.3/0.5/1.0R близки), и тратить на него бюджет проб значило бы
       // поднять планку всему семейству ни за что.
-      ...(RANGE_SWEEP2_PARAMS.has(spec.setup) ? { scaleOut: RANGE_SWEEP2_SCALE_OUT } : {}),
+      ...(RANGE_SWEEP2_PARAMS.has(spec.setup) || RANGE_SWEEP3_PARAMS.has(spec.setup)
+        ? { scaleOut: RANGE_SWEEP2_SCALE_OUT }
+        : {}),
     },
     filters,
   };

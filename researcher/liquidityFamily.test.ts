@@ -18,6 +18,7 @@ import { neighborSpecs } from "./screen.ts";
  * детерминированное, делить результат между тестами безопасно.
  */
 let allSpecs: CandidateSpec[] | null = null;
+const allEnumerated = (): CandidateSpec[] => (allSpecs ??= [...enumerateAll()]);
 const familySpecs = (): CandidateSpec[] => {
   allSpecs ??= [...enumerateAll()];
   return allSpecs.filter((s) => setupFamily(s.setup) === "liquidity_magnet");
@@ -171,5 +172,33 @@ describe("семейство часов фандинга", () => {
     expect([...stops]).toEqual([2]); // единственный стоп — свободы подбора нет
     expect([...takes].sort()).toEqual([1, 2, 3]);
     expect([...bars].sort()).toEqual([10, 20]);
+  });
+});
+
+describe("свип v3 — ровно одна переменная относительно v1", () => {
+  // Весь смысл опыта в том, что вход НЕ ТРОНУТ: v1 гонялась без сопровождения,
+  // v2 поменяла две вещи сразу и оказалась хуже, и только v3 меняет одну.
+  // Если вход разойдётся (например, кто-то поправит правило v1 и забудет про
+  // v3), сравнение молча перестанет быть сравнением одной переменной.
+  const at = (setup: string, dir: "long" | "short") =>
+    allEnumerated().find((s) => s.setup === setup && s.direction === dir && s.timeframe === "4h")!;
+
+  for (const bars of [126, 252, 504]) {
+    for (const dir of ["long", "short"] as const) {
+      test(`вход rangesweep3_b${bars} (${dir}) идентичен v1`, () => {
+        const v1 = toStrategyConfig(at(`rangesweep_b${bars}`, dir));
+        const v3 = toStrategyConfig(at(`rangesweep3_b${bars}`, dir));
+        expect(v3.entry).toEqual(v1.entry);
+      });
+    }
+  }
+
+  test("сопровождение есть ТОЛЬКО у v3", () => {
+    expect(toStrategyConfig(at("rangesweep3_b126", "short")).exit.scaleOut).toEqual({
+      atR: 0.5,
+      fraction: 0.5,
+      toBreakeven: true,
+    });
+    expect(toStrategyConfig(at("rangesweep_b126", "short")).exit.scaleOut).toBeUndefined();
   });
 });

@@ -107,6 +107,7 @@ describe("политика бюджета (пункт 6)", () => {
         "funding_hours",
         "range_sweep",
         "range_sweep_v2",
+        "range_sweep_v3",
       ]).toContain(f);
     }
   });
