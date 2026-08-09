@@ -98,7 +98,15 @@ describe("политика бюджета (пункт 6)", () => {
     expect(specs.length).toBeGreaterThan(0);
     const families = new Set(specs.map((s) => setupFamily(s.setup)));
     for (const f of families) {
-      expect(["liquidity_magnet", "funding_pressure", "funding_hours"]).toContain(f);
+      // Белый список НАМЕРЕННО жёсткий: новое семейство попадает сюда только
+      // вместе с пре-регистрацией и полем «кто платит». Падение этого теста —
+      // сигнал, что кто-то расширил пространство проб, не назвав плательщика.
+      expect([
+        "liquidity_magnet",
+        "funding_pressure",
+        "funding_hours",
+        "range_sweep",
+      ]).toContain(f);
     }
   });
 
