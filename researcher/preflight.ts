@@ -88,6 +88,24 @@ function countCorpus(dir: string): number {
   }
 }
 
+/**
+ * Требования разные у ночи и у часового тика, и путать их дорого.
+ *
+ * Ночь СЧИТАЕТ по корпусу — без него она не даёт «ноль находок», она даёт
+ * ноль сделок, записанный в журнал как вывод о рынке.
+ *
+ * Часовой тик корпус НЕ ЧИТАЕТ вовсе: инкубатор и надзор тянут живые бары с
+ * биржи (`fetchBinanceKlines`). Требовать от него 100 файлов значит на
+ * холодном кэше либо качать корпус впустую, либо ловить таймаут в 20 минут.
+ * Но манифест ему нужен: без него рынок живых баров ПРЕДПОЛАГАЕТСЯ, а
+ * предположение здесь — это ровно та авария, когда скрин считал по перпам, а
+ * инкубатор догонял спотом.
+ */
+export interface PreflightOptions {
+  /** Ночь — true. Часовой тик — false: он корпус не читает. */
+  requireCorpusFiles?: boolean;
+}
+
 /** Состояние всех источников — для отчёта, статуса и панели экрана. */
 export function dataSourceHealth(): SourceHealth[] {
   const root = collectRoot();
@@ -183,13 +201,37 @@ export function reportLiveMarket(): void {
  * `process.exit` здесь неуместен — бросаем, чтобы вызывающий мог решить
  * (тесты и разовые утилиты имеют право работать без собранных данных).
  */
-export function assertDataSources(): void {
+export function assertDataSources(opts: PreflightOptions = {}): void {
+  const requireCorpusFiles = opts.requireCorpusFiles ?? true;
   const health = dataSourceHealth();
-  const broken = health.filter((h) => !h.ok);
+  const broken = health
+    .filter((h) => !h.ok)
+    .filter((h) => requireCorpusFiles || h.name !== "корпус свечей");
+
+  // Рынок обязан быть УСТАНОВЛЕН, а не предположен — но только там, где
+  // корпус выбран осознанно. Старый корпус в public/data/history манифеста не
+  // имеет и доказанно спотовый: падать на нём было бы ложной тревогой.
+  // А вот если на корпус указали переменной окружения (облако, кэш раннера) и
+  // манифеста там нет — мы не знаем рынок, и угадывать нельзя.
+  if (process.env.RESEARCHER_HISTORY_DIR && marketIsAssumed(corpusRoot())) {
+    throw new Error(
+      [
+        `Предполётная проверка: рынок корпуса неизвестен — ${corpusRoot()}`,
+        "Каталог указан явно через RESEARCHER_HISTORY_DIR, файлы свечей в нём есть,",
+        "а манифеста нет. Спот и перпы дают РАЗНЫЕ цены (сверено байт в байт),",
+        "и предположение здесь развело бы скрин с инкубатором молча.",
+        "",
+        "Чинить: npx tsx researcher/collect-candles.ts --scan — он пересоберёт манифест",
+        "по фактическому содержимому каталога.",
+      ].join("\n"),
+    );
+  }
 
   const fresh = corpusFreshnessVerdict();
   if (broken.length === 0) {
-    if (fresh.level === "fail") {
+    // Просроченность корпуса останавливает ТОЛЬКО того, кто по нему считает.
+    // Часовой тик берёт бары с биржи, и мёртвый корпус ему не мешает.
+    if (fresh.level === "fail" && requireCorpusFiles) {
       throw new Error(
         [
           "Предполётная проверка: корпус свечей просрочен.",

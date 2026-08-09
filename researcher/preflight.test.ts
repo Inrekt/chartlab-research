@@ -86,7 +86,9 @@ describe("предполётная проверка источников", () =>
   it("полный комплект источников проходит молча", () => {
     const root = fakeRoot({ funding: 60, "metrics-1h": 60 });
     process.env.COLLECT_DIR = root;
-    const corpus = fakeCorpus(120);
+    // С манифестом: явно заданный корпус без него теперь не проходит вовсе —
+    // рынок обязан быть установлен, а не предположен.
+    const corpus = fakeCorpus(120, daysAgo(1));
 
     expect(() => assertDataSources()).not.toThrow();
     const health = dataSourceHealth();
@@ -166,5 +168,40 @@ describe("предполётная проверка источников", () =>
     expect(byName["metrics-1h"].ok).toBe(false);
     expect(byName["metrics-1h"].files).toBe(7);
     rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("требования различаются по точкам входа", () => {
+  it("часовой тик не падает из-за корпуса — он его не читает", () => {
+    // Инкубатор и надзор тянут живые бары с биржи. Требовать от тика 100
+    // файлов значит на холодном кэше качать корпус впустую внутри
+    // 20-минутного джоба, а при просроченном корпусе — вставать без причины.
+    const root = fakeRoot({ funding: 60, "metrics-1h": 60 });
+    process.env.COLLECT_DIR = root;
+    const corpus = fakeCorpus(0, "2020-01-01T00:00:00.000Z");
+
+    expect(() => assertDataSources()).toThrow();
+    expect(() => assertDataSources({ requireCorpusFiles: false })).not.toThrow();
+
+    rmSync(root, { recursive: true, force: true });
+    rmSync(corpus, { recursive: true, force: true });
+  });
+
+  it("явно указанный корпус без манифеста роняет ОБЕ точки входа", () => {
+    // Рынок обязан быть установлен, а не предположен: спот и перпы дают разные
+    // цены, и молчаливый дефолт развёл бы скрин с инкубатором. Проверка бьёт
+    // именно по явно заданному каталогу — легаси-корпус в public/data/history
+    // манифеста не имеет законно и доказанно спотовый.
+    const root = fakeRoot({ funding: 60, "metrics-1h": 60 });
+    process.env.COLLECT_DIR = root;
+    const corpus = fakeCorpus(120); // файлы есть, манифеста нет
+
+    expect(() => assertDataSources()).toThrow(/рынок корпуса неизвестен/);
+    expect(() => assertDataSources({ requireCorpusFiles: false })).toThrow(
+      /рынок корпуса неизвестен/,
+    );
+
+    rmSync(root, { recursive: true, force: true });
+    rmSync(corpus, { recursive: true, force: true });
   });
 });
