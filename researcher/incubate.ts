@@ -26,7 +26,13 @@ import { loadCandles } from "./corpus.ts";
 import { buildCard, DEFAULT_VAULT_CARDS_DIR, writeCard } from "./cards.ts";
 import { IncubationBook, type PaperTradeRow } from "./incubationBook.ts";
 import { TrialLedger } from "./ledger.ts";
-import { expectedAcceptSampleSize, sprtDecide } from "./sprt.ts";
+import {
+  dailySigma,
+  expectedAcceptSampleSize,
+  sprtDecide,
+  toDailyObservations,
+  withinDayIcc,
+} from "./sprt.ts";
 import type { Candle } from "../src/core/types/index.ts";
 
 /**
@@ -47,6 +53,14 @@ export const MIN_GRADUATION_DAYS: Record<SignalTf, number> = {
 };
 /** Нижний предел σ: вырожденно узкое распределение R завысило бы шаг LLR. */
 const SIGMA_FLOOR = 0.5;
+/**
+ * ρ, когда дней с несколькими сделками ещё мало для честной оценки.
+ *
+ * Взят ВЕРХНИЙ из замеренных (0.44 на 4ч против 0.20 на 1ч), потому что
+ * завышенная ρ даёт больший σ_день и более осторожный тест. Ноль здесь вернул
+ * бы ровно ту ошибку, от которой защищает вся правка.
+ */
+const ICC_FALLBACK_RHO = 0.45;
 
 export type CandleSource = (
   symbol: string,
@@ -268,11 +282,32 @@ export async function runIncubation(opts: {
     );
 
     const rows = book.trades(trial.candidateId);
-    const sprt = sprtDecide(rows.map(netR), inc.mu1, inc.sigma);
+
+    // SPRT решает по ДНЕВНЫМ наблюдениям, а не по сделкам: сделки не
+    // независимы (холд длиннее интервала входов, внутри дня их двигает общий
+    // рыночный фактор). Замер на 600 симуляциях: наивный посделочный счёт при
+    // измеренной ρ=0.44 даёт ложное принятие 14.5% вместо ≤5.6% — втрое мягче
+    // вывески — и теряет 13 пунктов мощности.
+    // Пре-регистрация: docs/sprt-daily-preregistration.md.
+    const netByDay = rows.map((r) => ({ day: Math.floor(r.exitTime / 86_400), net: netR(r) }));
+    const daily = toDailyObservations(netByDay);
+    const icc = withinDayIcc(netByDay);
+    // Данных на оценку ρ не хватило — берём КОНСЕРВАТИВНУЮ: завышенная ρ даёт
+    // больший σ_день, то есть более осторожный тест. Считать ρ нулём здесь
+    // значило бы вернуть ту самую ошибку, от которой правка и защищает.
+    const rho = icc?.rho ?? ICC_FALLBACK_RHO;
+    const meanPerDay = icc?.meanPerDay ?? (daily.length > 0 ? rows.length / daily.length : 1);
+    const sigmaDay = dailySigma(inc.sigma, meanPerDay, rho);
+    const sprt = sprtDecide(daily.map((d) => d.mean), inc.mu1, sigmaDay);
     const days = (nowSec() - inc.frozenAt) / 86_400;
     summary.checked += 1;
     ledger.recordEval(trial.candidateId, "incubation_check", {
       trades: rows.length,
+      observationDays: daily.length,
+      rho: Number(rho.toFixed(3)),
+      rhoMeasured: icc !== null,
+      meanPerDay: Number(meanPerDay.toFixed(2)),
+      sigmaDay: Number(sigmaDay.toFixed(4)),
       llr: Number(sprt.llr.toFixed(3)),
       decision: sprt.decision,
       stoppedAt: sprt.stoppedAt,
@@ -283,7 +318,7 @@ export async function runIncubation(opts: {
       ledger.transition(
         trial.candidateId,
         "KILLED",
-        `SPRT принял H0: llr=${sprt.llr.toFixed(2)} после ${sprt.stoppedAt} сделок — край не подтвердился вживую`,
+        `SPRT принял H0: llr=${sprt.llr.toFixed(2)} после ${sprt.stoppedAt} дней — край не подтвердился вживую`,
       );
       summary.killed.push(trial.candidateId);
       continue;

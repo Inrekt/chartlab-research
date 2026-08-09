@@ -15,6 +15,7 @@ import {
   type CandleSource,
 } from "./incubate.ts";
 import { ExchangeBlockedError } from "./binance.ts";
+import { dailySigma, toDailyObservations, withinDayIcc } from "./sprt.ts";
 import { IncubationBook } from "./incubationBook.ts";
 import { TrialLedger } from "./ledger.ts";
 import {
@@ -327,7 +328,10 @@ describe("incubation terminal verdicts (never executed in production)", () => {
     const last = lastReason(id);
     expect(last.toState).toBe("KILLED");
     expect(last.reason).toContain("SPRT принял H0");
-    expect(last.reason).toContain("после 11 сделок");
+    // Единица наблюдения теперь ДЕНЬ, а не сделка. Здесь по одной сделке в
+    // сутки, поэтому счёт совпадает — и это ровно то, чего мы хотим: при
+    // отсутствии перекрытия дневная агрегация тождественна посделочной.
+    expect(last.reason).toContain("после 11 дней");
     // карточки у убитого кандидата быть не должно
     expect(existsSync(join(cardsDir, cardFileName(id)))).toBe(false);
   });
@@ -574,5 +578,60 @@ describe("запасной источник — корпус", () => {
     const source = corpusCandleSource();
     const bars = await source("BTCUSDT", "1h", 4_000_000_000);
     expect(bars.every((c) => c.time >= 4_000_000_000)).toBe(true);
+  });
+});
+
+describe("SPRT решает по дням, а не по сделкам", () => {
+  test("без перекрытия дневная агрегация ТОЖДЕСТВЕННА посделочной", () => {
+    // Ключевое свойство: правка не меняет поведение там, где предпосылка
+    // независимости и так выполнялась. Иначе это была бы не починка, а
+    // подкрутка под желаемый результат.
+    const netRs = Array.from({ length: 12 }, (_, i) => ({ day: i, net: -1 }));
+    const daily = toDailyObservations(netRs);
+    expect(daily).toHaveLength(12);
+    expect(daily.every((d) => d.count === 1 && d.mean === -1)).toBe(true);
+    // σ_день при одной сделке в дне равен σ при ЛЮБОЙ ρ.
+    expect(dailySigma(1.0, 1, 0.45)).toBeCloseTo(1.0, 10);
+    expect(dailySigma(1.0, 1, 0)).toBeCloseTo(1.0, 10);
+  });
+
+  test("σ дня растёт с корреляцией: при ρ=1 день — одна ставка", () => {
+    // Границы формулы σ_день = σ·√((1+(m−1)ρ)/m). При ρ=0 три сделки в дне
+    // дают σ/√3 (полная независимость), при ρ=1 — сам σ.
+    expect(dailySigma(1.0, 3, 0)).toBeCloseTo(1 / Math.sqrt(3), 6);
+    expect(dailySigma(1.0, 3, 1)).toBeCloseTo(1.0, 6);
+    expect(dailySigma(1.0, 3, 0.44)).toBeGreaterThan(dailySigma(1.0, 3, 0.2));
+  });
+
+  test("ρ оценивается по данным и не уходит в минус на шуме", () => {
+    // Отрицательная ICC на малой выборке — шум, а не отрицательная
+    // корреляция. Пропустить её значило бы получить σ_день МЕНЬШЕ честного,
+    // то есть тест мягче заявленного — ровно та ошибка, которую чиним.
+    const noisy = Array.from({ length: 60 }, (_, i) => ({
+      day: Math.floor(i / 2),
+      net: i % 2 === 0 ? 1 : -1,
+    }));
+    const icc = withinDayIcc(noisy);
+    expect(icc).not.toBeNull();
+    expect(icc!.rho).toBeGreaterThanOrEqual(0);
+    expect(icc!.meanPerDay).toBeCloseTo(2, 6);
+  });
+
+  test("мало данных → ρ не выдумывается, а сообщается как неизвестная", () => {
+    // Вызывающий обязан подставить консервативную оценку сам. Вернуть здесь
+    // ноль значило бы тихо соврать в мягкую сторону.
+    expect(withinDayIcc([{ day: 1, net: 0.5 }])).toBeNull();
+  });
+
+  test("общий дневной фактор распознаётся как высокая ρ", () => {
+    // Три сделки в дне, целиком определяемые дневным сдвигом → ρ близка к 1.
+    const rows: { day: number; net: number }[] = [];
+    for (let d = 0; d < 40; d++) {
+      const shift = d % 2 === 0 ? 1 : -1;
+      for (let k = 0; k < 3; k++) rows.push({ day: d, net: shift });
+    }
+    const icc = withinDayIcc(rows)!;
+    expect(icc.rho).toBeGreaterThan(0.9);
+    expect(icc.meanPerDay).toBeCloseTo(3, 6);
   });
 });
