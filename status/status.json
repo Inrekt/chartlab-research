@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-09T19:43:16.375Z",
+  "generatedAt": "2026-08-09T20:47:43.244Z",
   "run": {
     "durationMin": 1,
     "nextNightUtc": "2026-08-09T21:37:00.000Z",
-    "lastTickUtc": "2026-08-09T19:43:16.375Z"
+    "lastTickUtc": "2026-08-09T20:47:43.244Z"
   },
   "ledger": {
     "trials": 56806,
@@ -36,7 +36,7 @@
     ],
     "corpus": {
       "newestBar": "2026-08-08T23:00:00.000Z",
-      "ageDays": 0.86,
+      "ageDays": 0.91,
       "laggingSymbols": 3,
       "level": "ok"
     }
@@ -44,9 +44,9 @@
   "failure": null,
   "silence": {
     "level": "ok",
-    "hoursSince": 1.9373352777777777,
+    "hoursSince": 3.011465277777778,
     "lastNightIso": "2026-08-09T17:47:01.965Z",
-    "message": "Последняя ночь 1.9 ч назад — расписание живо."
+    "message": "Последняя ночь 3.0 ч назад — расписание живо."
   },
   "universes": [
     {
