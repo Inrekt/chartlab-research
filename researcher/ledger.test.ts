@@ -89,6 +89,9 @@ describe("registration", () => {
     ledger.registerCandidates(specs.slice(0, 5));
     const rows = ledger.byState("CANDIDATE");
     const family = setupFamily(ledger.getTrial(rows[0]!.candidateId)!.spec.setup);
+    // Испытание закрывает комбинацию только ПОСЛЕ оценки — без неё измерения
+    // не было, и сэмплер обязан выдать её снова (см. соседний тест).
+    for (const r of rows) ledger.recordEval(r.candidateId, "halving_16", { trades: 12 });
 
     expect(ledger.resamplableExclusions().size).toBe(ledger.allCandidateIds().size);
 
@@ -105,6 +108,32 @@ describe("registration", () => {
     // А сэмплеру эти комбинации снова доступны.
     expect(ledger.resamplableExclusions().size).toBeLessThan(5);
     expect(ledger.quarantines()[0]!.reason).toMatch(/фандинг/);
+  });
+
+  test("упавшая ночь не сжигает набранную партию: без оценки — не измерение", () => {
+    // 2026-08-09 ночь набрала 54 комбинации семейства владельца, упала на
+    // страже недобора ПОСЛЕ регистрации и записала их. Через восемь минут
+    // следующая ночь набрала ноль: гипотезу закрыла собственная авария, а не
+    // рынок. Регистрация идёт до прогона намеренно (происхождение задним
+    // числом не восстановить), поэтому защищать надо не порядок, а критерий.
+    ledger.registerCandidates(specs.slice(0, 4));
+    const rows = ledger.byState("CANDIDATE");
+    expect(rows.length).toBe(4);
+
+    // Ни одной оценки — партия «сожжена» падением. Сэмплер обязан выдать всё
+    // это снова: ПЕРВЫЙ взгляд на данные, а не второй.
+    expect(ledger.neverMeasuredIds().size).toBe(4);
+    expect(ledger.resamplableExclusions().size).toBe(0);
+
+    // Как только испытание оценено — комбинация закрыта, и повторить её
+    // нельзя: иначе это была бы вторая попытка на тех же данных.
+    ledger.recordEval(rows[0]!.candidateId, "halving_16", { trades: 0 });
+    expect(ledger.neverMeasuredIds().size).toBe(3);
+    expect(ledger.resamplableExclusions().has(rows[0]!.candidateId)).toBe(true);
+
+    // Ноль сделок — тоже измерение. Кандидат, честно умерший на первой стадии,
+    // закрыт навсегда, и путать его с неоценённым нельзя.
+    expect(ledger.counts().trials).toBe(4);
   });
 
   test("карантин append-only: переписать и удалить нельзя", () => {
