@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { requiredTradeSharpe, roundTripCost } from "./cost-floor.ts";
+import { MEASURED_TRADE_SIGMA, requiredTradeSharpe, roundTripCost } from "./cost-floor.ts";
 
 const base = {
   cost: 0.002, // 20 бп круговых — фактическая ставка движка
@@ -37,6 +37,22 @@ describe("стоимостной пол", () => {
     const ours = requiredTradeSharpe({ ...base, holdHours: 15 });
     const theirs = requiredTradeSharpe({ ...base, sigmaHourly: 0.004, holdHours: 1 });
     expect(theirs / ours).toBeGreaterThan(3.5);
+  });
+
+  test("замеренная σ сделки меняет пол мало — вывод не держится на модели", () => {
+    // Внешняя проверка утверждала, что модель σ_час·√h завышает пол в 2.5–5
+    // раз. Замер по 41 131 сделке движка: 461 бп против модельных 407, то есть
+    // поправка ~4%. Тест пинит именно это: если однажды расхождение вырастет,
+    // вывод «связывают ворота, а не издержки» придётся пересчитывать заново.
+    const modelled = requiredTradeSharpe({ ...base, holdHours: 15 });
+    const measured = requiredTradeSharpe({
+      ...base,
+      holdHours: 15,
+      measuredTradeSigma: MEASURED_TRADE_SIGMA["1h"],
+    });
+    expect(Math.abs(1 - measured / modelled)).toBeLessThan(0.1);
+    // И в обоих случаях пол сильно ниже обоих ворот (0.54 и 0.36).
+    expect(measured).toBeLessThan(0.36 / 2);
   });
 
   test("удлинение горизонта с наших 15ч до рекомендованных 72ч даёт мало", () => {

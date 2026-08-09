@@ -66,6 +66,8 @@ export function writeStatus(args: {
   durationMin?: number | null;
   dbPath?: string;
   statusPath?: string;
+  /** Причина падения прогона; не задана — прогон дошёл до конца. */
+  failure?: string | null;
 }): void {
   const statusPath = args.statusPath ?? STATUS_PATH;
   const previous = readStatus(statusPath);

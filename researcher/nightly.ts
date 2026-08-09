@@ -172,4 +172,48 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({ screens, incubation, supervision }, null, 2));
 }
 
-await main();
+/**
+ * Ночь упала — статус обязан СКАЗАТЬ ОБ ЭТОМ, а не остаться вчерашним.
+ *
+ * `if: always()` в воркфлоу заставляет опубликовать файл при любом исходе, но
+ * публиковать было нечего: упавшая ночь до `writeStatus` не доходила, и на
+ * экран уезжал ПРЕДЫДУЩИЙ зелёный статус. Снаружи всё хорошо, внутри машина
+ * стоит — ровно то состояние, в котором корпус простоял две недели.
+ *
+ * Здесь чинится содержимое: перед выходом с ненулевым кодом пишется статус с
+ * причиной падения. Испытаний в нём нет (их и не было), зато есть правда.
+ */
+/** Пустые сводки для статуса падения: ничего не отработало, и это правда. */
+const EMPTY_INCUBATION: IncubationSummary = {
+  seeded: 0,
+  rejectedAtEntry: 0,
+  checked: 0,
+  newTrades: 0,
+  graduated: [],
+  killed: [],
+};
+const EMPTY_SUPERVISION: SupervisionSummary = {
+  supervised: 0,
+  newTrades: 0,
+  decayed: [],
+  requalified: [],
+  retired: [],
+};
+
+await main().catch((error: unknown) => {
+  const reason = error instanceof Error ? error.message : String(error);
+  console.error(reason);
+  try {
+    writeStatus({
+      screens: [],
+      incubation: EMPTY_INCUBATION,
+      supervision: EMPTY_SUPERVISION,
+      durationMin: null,
+      failure: reason.split("\n")[0],
+    });
+  } catch (writeError) {
+    // Не смогли даже пожаловаться — но исходную причину терять нельзя.
+    console.error(`не удалось записать статус падения: ${String(writeError)}`);
+  }
+  process.exit(1);
+});

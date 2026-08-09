@@ -114,6 +114,15 @@ export interface ResearcherStatus {
   history: StatusHistoryRow[];
   /** Необязательно: статусы, записанные до появления поля, читаются как есть. */
   sources?: StatusSources;
+  /**
+   * Причина падения последнего прогона, если он упал. `null` — прогон прошёл.
+   *
+   * Стоит в статусе, потому что «нет данных» и «прогон упал» на экране
+   * выглядят одинаково, а лечатся по-разному. Поле обязано ОЧИЩАТЬСЯ удачным
+   * прогоном, иначе одна упавшая ночь навсегда покрасит панель в красный и
+   * тревога перестанет что-либо значить.
+   */
+  failure?: string | null;
 }
 
 /** Следующее срабатывание ночного крона после `now`. */
@@ -155,6 +164,8 @@ export interface BuildStatusInput {
    * лежит на диске у разработчика.
    */
   sources?: StatusSources;
+  /** Причина падения; передаётся только упавшим прогоном. */
+  failure?: string | null;
 }
 
 export function buildStatus(input: BuildStatusInput): ResearcherStatus {
@@ -229,6 +240,17 @@ export function buildStatus(input: BuildStatusInput): ResearcherStatus {
     // измерил: показать ПУСТО там, где раньше было «всё хорошо», значит
     // потерять единственный признак поломки данных.
     sources: input.sources ?? input.previous?.sources,
+    // Явно переданный вердикт всегда главнее. Это НЕ мелочь: упавшая ночь
+    // приходит с пустым `screens` и по признаку `isNight` неотличима от
+    // часового тика — то есть её собственная причина падения потерялась бы,
+    // а на панель уехал бы вчерашний зелёный статус.
+    // Успешная ночь очищает поле; тик о ночи не судит и переносит как есть.
+    failure:
+      input.failure !== undefined
+        ? input.failure
+        : isNight
+          ? null
+          : (input.previous?.failure ?? null),
     universes: isNight
       ? input.screens.map((screen) => ({
           tf: screen.tf,

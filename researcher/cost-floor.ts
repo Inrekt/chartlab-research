@@ -62,14 +62,32 @@ export interface FloorInput {
   holdHours: number;
   targetAnnualSharpe: number;
   tradesPerYear: number;
+  /**
+   * Замеренная σ доходности СДЕЛКИ в долях цены. Задана — используется она,
+   * а модель `σ_час·√h` игнорируется.
+   */
+  measuredTradeSigma?: number;
 }
+
+/**
+ * Замеренная σ сделки по данным движка, в долях цены.
+ *
+ * Модель `σ_час·√h` предполагает случайное блуждание, а сделка обрывается
+ * стопом или тейком — распределение усечено с обеих сторон, и совпадать эти
+ * величины не обязаны. Замер: 41 131 и 13 004 сделки, 30 спек × 6 символов.
+ *
+ * Расхождение с моделью оказалось МАЛЫМ (461 против 407 бп на 1h), то есть
+ * поправка меняет пол на ~4% и вывод «связывают ворота, а не издержки» не
+ * трогает. Записано ровно потому, что внешняя проверка утверждала расхождение
+ * в 2.5–5 раз: величину, на которой держится вывод, полагается мерить, а не
+ * обсуждать.
+ */
+export const MEASURED_TRADE_SIGMA: Record<string, number> = { "1h": 0.0461, "4h": 0.0832 };
 
 /** Требуемый Шарп на сделку (валовой) при данном горизонте. */
 export function requiredTradeSharpe(i: FloorInput): number {
-  return (
-    i.cost / (i.sigmaHourly * Math.sqrt(i.holdHours)) +
-    i.targetAnnualSharpe / Math.sqrt(i.tradesPerYear)
-  );
+  const sigmaTrade = i.measuredTradeSigma ?? i.sigmaHourly * Math.sqrt(i.holdHours);
+  return i.cost / sigmaTrade + i.targetAnnualSharpe / Math.sqrt(i.tradesPerYear);
 }
 
 function arg(name: string, fallback: number): number {
@@ -98,9 +116,26 @@ async function main(): Promise<void> {
     const need = requiredTradeSharpe({ ...base, holdHours: h });
     console.error(`${String(h).padStart(4)}   ${need.toFixed(3)}                  ${note}`);
   }
+  console.error("\n── на ЗАМЕРЕННОЙ σ сделки (движок), а не на модели σ_час·√h ──");
+  for (const tf of ["1h", "4h"] as const) {
+    const modelH = tf === "1h" ? 15 : 40;
+    const modelled = requiredTradeSharpe({ ...base, holdHours: modelH });
+    const measured = requiredTradeSharpe({
+      ...base,
+      holdHours: modelH,
+      measuredTradeSigma: MEASURED_TRADE_SIGMA[tf],
+    });
+    console.error(
+      `${tf}: модель ${modelled.toFixed(3)} → замер ${measured.toFixed(3)} ` +
+        `(σ сделки ${(MEASURED_TRADE_SIGMA[tf] * 1e4).toFixed(0)} бп)`,
+    );
+  }
+
   console.error(
-    "\nДля сравнения: ворота дефляции при нынешнем varSR требуют ~0.5 Шарпа на\n" +
-      "сделку. Значит связывающее ограничение — ВОРОТА, а не издержки.",
+    "\nДля сравнения: ворота дефляции при нынешнем varSR требуют ~0.54 Шарпа на\n" +
+      "сделку, а вход в инкубатор — 0.36 (тождество, см. thresholds.test.ts).\n" +
+      "Оба ограничения ВЫШЕ стоимостного пола втрое и более. Значит связывают\n" +
+      "ворота, а не арифметика издержек.",
   );
   console.log(
     JSON.stringify(
