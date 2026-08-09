@@ -604,11 +604,99 @@ const FUNDING_PRESSURE_SETUPS: readonly SetupDef[] = FUND_WINDOWS_DAYS.flatMap((
   })),
 );
 
+
+// ── Семейство: свип границы недельного боковика (сетап владельца) ───────────
+//
+// Пре-регистрация ЗАМОРОЖЕНА до этого кода: docs/family-range-sweep-preregistration.md.
+// Гипотеза словами владельца: инструмент несколько недель в боковике, затем
+// импульс выносит верхнюю границу и снимает скопление стопов над ней; вход в
+// шорт на выносе, цель — первый крупный столб ликвидности по пути.
+//
+// ⚠️ РЕШЕНИЕ ПО ДИСЦИПЛИНЕ, а не по лени: варьируется ТОЛЬКО новая величина —
+// длина окна боковика. Растянутость, вес кластера и окно поиска магнита взяты
+// серединами уже исследованных сеток liquidity_magnet и НЕ перебираются
+// заново. Новая гипотеза — «режим боковика имеет значение», и она должна
+// проверяться изолированно: перебор старых осей поверх новой раздул бы
+// пространство в 18 раз и смешал бы два вопроса в один.
+//
+// Окно объявлено в БАРАХ, потому что привязки сетапа к таймфрейму в грамматике
+// нет: 504 бара — три недели на 1ч, 126 — три недели на 4ч. Обе величины
+// обоснованы механизмом, а не подобраны.
+const RANGE_SWEEP_BARS = [126, 252, 504] as const;
+/** Середины исследованных сеток liquidity_magnet — фиксированы намеренно. */
+const RANGE_SWEEP_MIN_WEIGHT = 2;
+const RANGE_SWEEP_WINDOW: readonly [number, number] = [2, 10];
+
+const RANGE_SWEEP_PARAMS = new Map<string, number>();
+
+const RANGE_SWEEP_SETUPS: readonly SetupDef[] = RANGE_SWEEP_BARS.map((bars) => {
+  const id = `rangesweep_b${bars}`;
+  RANGE_SWEEP_PARAMS.set(id, bars);
+  return {
+    id,
+    family: "range_sweep",
+    whoPays:
+      "стопы шортов, стоявшие над границей боковика: их принудительное закрытие и есть топливо выноса, " +
+      "и когда кластер выбран, покупателей по этим ценам не остаётся; плюс плечевой покупатель пробоя, " +
+      "вошедший в уже снятую ликвидность — над ним пусто, и он становится вынужденным продавцом " +
+      "(пре-регистрация family-range-sweep, механизм подтверждён владельцем 2026-08-09)",
+    fixedRule: true,
+    // Приор выше, чем у слепых семейств: гипотеза принесена владельцем с
+    // собственным торговым опытом, а не порождена перебором. Но не высокий:
+    // опыт — не доказательство, и семейство ещё ни разу не проверялось.
+    prior: 3,
+    build: (dir: Direction): ConditionAtom[] => {
+      // Зеркальность сохранена, но механизм описан для ШОРТА на выносе ВВЕРХ.
+      const short = dir === "short";
+      const swept = short ? "upper" : "lower";
+      const opposite = short ? "lower" : "upper";
+      return [
+        // 1. Боковик: за последние `bars` баров НЕ обновлён верх предыдущего
+        //    такого же окна. Сдвиг 1 исключает сам бар выноса — иначе условие
+        //    отменяло бы себя же.
+        {
+          kind: "comparison",
+          left: { kind: "donchian", period: bars, line: swept, shift: 1 },
+          op: short ? "<=" : ">=",
+          right: { kind: "donchian", period: bars, line: swept, shift: 1 + bars },
+        },
+        // 2. …и низ тоже не обновлён: боковик — это отсутствие НОВОГО
+        //    экстремума с ОБЕИХ сторон, иначе это тренд с паузой.
+        {
+          kind: "comparison",
+          left: { kind: "donchian", period: bars, line: opposite, shift: 1 },
+          op: short ? ">=" : "<=",
+          right: { kind: "donchian", period: bars, line: opposite, shift: 1 + bars },
+        },
+        // 3. Вынос: цена вышла за границу боковика. Канал берётся со сдвигом 1
+        //    (без текущего бара), иначе пробой невозможен по построению.
+        {
+          kind: "comparison",
+          left: { kind: "close" },
+          op: short ? ">" : "<",
+          right: { kind: "donchian", period: bars, line: swept, shift: 1 },
+        },
+        // 4. Цель существует: крупное скопление ликвидности с ПРОТИВОПОЛОЖНОЙ
+        //    стороны — тот самый «первый крупный столб», к которому, по словам
+        //    владельца, рынок и идёт после снятия ликвидности.
+        {
+          kind: "liquidity",
+          side: short ? "below" : "above",
+          minAtr: RANGE_SWEEP_WINDOW[0],
+          maxAtr: RANGE_SWEEP_WINDOW[1],
+          minWeight: RANGE_SWEEP_MIN_WEIGHT,
+        },
+      ];
+    },
+  } satisfies SetupDef;
+});
+
 export const SETUPS: readonly SetupDef[] = [
   ...BASE_SETUPS,
   ...LIQUIDITY_SETUPS,
   ...FUNDING_SETUPS,
   ...FUNDING_PRESSURE_SETUPS,
+  ...RANGE_SWEEP_SETUPS,
 ];
 
 /**
@@ -619,6 +707,17 @@ export const SETUPS: readonly SetupDef[] = [
  * Для остальных семейств — пусто: их соседи задаются сеткой выходов.
  */
 export function setupNeighbors(setupId: string): string[] {
+  // Соседи по длине окна боковика — единственной варьируемой оси семейства.
+  // Без них ворота плато отсекли бы весь свип, не проверив ни одного правила.
+  const rangeBars = RANGE_SWEEP_PARAMS.get(setupId);
+  if (rangeBars !== undefined) {
+    const i = RANGE_SWEEP_BARS.indexOf(rangeBars as (typeof RANGE_SWEEP_BARS)[number]);
+    return [-1, 1]
+      .map((d) => RANGE_SWEEP_BARS[i + d])
+      .filter((v): v is (typeof RANGE_SWEEP_BARS)[number] => v !== undefined)
+      .map((v) => `rangesweep_b${v}`);
+  }
+
   const fund = FUND_PARAMS.get(setupId);
   if (fund) {
     // Без соседей плато отсекло бы семейство, ничего не проверив: у выхода
@@ -660,7 +759,9 @@ export function setupNeighbors(setupId: string): string[] {
 
 /** Выходы, допустимые для сетапа: у семейства — свои, уровневые. */
 export function exitsFor(setupId: string): readonly ExitSpec[] {
-  if (LIQ_PARAMS.has(setupId)) return LIQUIDITY_EXITS;
+  // Свип боковика выходит ПО ЛИКВИДНОСТИ, как и магнит: цель — столб, а не
+  // фиксированное R. Общий пул выходов здесь не подошёл бы по смыслу.
+  if (LIQ_PARAMS.has(setupId) || RANGE_SWEEP_PARAMS.has(setupId)) return LIQUIDITY_EXITS;
   const own = SETUPS.find((s) => s.id === setupId)?.exits;
   return own ?? EXITS;
 }

@@ -742,9 +742,32 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     // SPRT из бэктеста. Пишется ДО перехода — заморозка правил и данных вместе.
     const bySymbolCount = new Map<string, number>();
     for (const t of f.trades) bySymbolCount.set(t.symbol, (bySymbolCount.get(t.symbol) ?? 0) + 1);
+
+    /**
+     * Ширина посева выводится из ЧАСТОТЫ кандидата, а не задана числом.
+     *
+     * Замер, из-за которого это появилось: у семейства свипа боковика 0.41
+     * сделки на символ в год. При посеве на 8 символах сорок форвард-сделок
+     * набирались бы 4419 дней, при 30 — 1179, при потолке инкубации в 365.
+     * То есть выпуск был бы невозможен АРИФМЕТИЧЕСКИ, и кандидат умер бы «не
+     * доказавшим край», хотя проверить его не дали.
+     *
+     * Быстрым семействам широкий посев не нужен и вреден (лишние запросы к
+     * бирже каждый час), поэтому берётся минимум символов, при котором тест
+     * успевает закончиться в календарь: sqrt-запаса нет, считается напрямую.
+     */
+    const spanDays = Math.max(1, (Math.max(...f.trades.map((t) => t.entryTime)) -
+      Math.min(...f.trades.map((t) => t.entryTime))) / 86_400);
+    const symbolsTraded = bySymbolCount.size || 1;
+    const perSymbolYear = (f.trades.length / symbolsTraded) * (365 / spanDays);
+    // Нужно MIN_GRADUATION_TRADES за календарный пол, с запасом ×1.5 на то,
+    // что форвард всегда медленнее бэктеста (режим мог смениться).
+    const needPerYear = (40 * 1.5 * 365) / 120;
+    const needSymbols = perSymbolYear > 0 ? Math.ceil(needPerYear / perSymbolYear) : 8;
+    const seedWidth = Math.min(Math.max(8, needSymbols), bySymbolCount.size);
     const topSymbols = [...bySymbolCount.entries()]
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
+      .slice(0, seedWidth)
       .map(([s]) => s);
     const netMoments = moments(netRs);
     ledger.recordEval(f.id, "incubation_seed", {
@@ -752,6 +775,10 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
       sigma: Number(netMoments.stdDev.toFixed(4)),
       symbols: topSymbols.join(","),
       tf: opts.tf,
+      // В журнал — чтобы решение о ширине посева было проверяемым, а не
+      // спрятанным в коде: медленное семейство обязано получать широкий посев.
+      seedWidth,
+      tradesPerSymbolYear: Number(perSymbolYear.toFixed(3)),
     });
     ledger.transition(f.id, "VALIDATED", "прошёл все ворота ночного гаунтлета");
     validated.push({ id: f.id, metrics: { ...dsrGate.metrics, ...wilsonGate.metrics } });
