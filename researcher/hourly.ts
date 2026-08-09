@@ -8,7 +8,7 @@ import { corpusCandleSource, runIncubation, type CandleSource } from "./incubate
 import { ExchangeBlockedError, fetchBinanceKlines } from "./binance.ts";
 import { writeStatus } from "./statusFile.ts";
 import { DB_PATH, DEFAULT_VAULT_DIR } from "./paths.ts";
-import { assertDataSources } from "./preflight.ts";
+import { assertDataSources, corpusFreshnessVerdict } from "./preflight.ts";
 import { runSupervision } from "./supervise.ts";
 
 // Инкубатор гоняет тот же движок, что и ночь. Без источников кандидат набирал
@@ -50,6 +50,26 @@ const source: CandleSource = async (symbol, tf, startSec) => {
         "Отставание около суток, форвард от этого не страдает; живые сигналы " +
         "потребуют хоста с прямым доступом.",
     );
+
+    // В запасном режиме просроченность корпуса становится СМЕРТЕЛЬНОЙ, хотя
+    // при живой бирже она безразлична. Источник отвечает успешно — просто
+    // пустотой, — поэтому предохранитель «упали все символы» здесь молчит, и
+    // кандидат копил бы календарь без единой сделки, пока не умрёт «не
+    // доказавшим край». Ровно та подмена аварии выводом о рынке, против
+    // которой построена вся машина.
+    const fresh = corpusFreshnessVerdict();
+    if (fresh.level === "fail") {
+      throw new Error(
+        [
+          "Инкубация невозможна: биржа закрыта, а корпус просрочен.",
+          `  последний бар корпуса: ${fresh.newestIso} (${fresh.ageDays?.toFixed(1)} сут назад)`,
+          "",
+          "Запасной источник отвечает пустотой, а не ошибкой, поэтому без этой",
+          "проверки кандидат молча просидел бы 365 дней и был бы списан как",
+          "не доказавший край. Чинить: ночной сбор корпуса из архива.",
+        ].join("\n"),
+      );
+    }
     return corpusCandleSource()(symbol, tf, startSec);
   }
 };
