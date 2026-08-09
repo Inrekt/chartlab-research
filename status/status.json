@@ -1,15 +1,16 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-09T10:47:16.671Z",
+  "generatedAt": "2026-08-09T11:06:06.492Z",
   "run": {
     "durationMin": 0,
     "nextNightUtc": "2026-08-09T21:37:00.000Z",
-    "lastTickUtc": "2026-08-09T10:47:16.671Z"
+    "lastTickUtc": "2026-08-09T11:06:06.492Z"
   },
   "ledger": {
-    "trials": 56374,
-    "clusters": 9640,
+    "trials": 56428,
+    "clusters": 9642,
     "census": {
+      "CANDIDATE": 54,
       "REJECTED": 56374
     }
   },
@@ -36,12 +37,12 @@
     ],
     "corpus": {
       "newestBar": "2026-08-08T23:00:00.000Z",
-      "ageDays": 0.49,
+      "ageDays": 0.5,
       "laggingSymbols": 3,
       "level": "ok"
     }
   },
-  "failure": "Пространство гипотез исчерпано: набрано 0 из 2000 запрошенных.",
+  "failure": "Пространство гипотез исчерпано: набрано 54 из 2000 запрошенных.",
   "universes": [
     {
       "tf": "1h",
