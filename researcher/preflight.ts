@@ -20,7 +20,8 @@
  */
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { HISTORY_DIR, corpusFreshness } from "./corpus.ts";
+import { klinesUrlFromCorpus, marketIsAssumed } from "./binance.ts";
+import { HISTORY_DIR, corpusFreshness, corpusVersion } from "./corpus.ts";
 
 /** Корень собранных данных — тот же дефолт, что у читателей CSV. */
 export function collectRoot(): string {
@@ -154,6 +155,28 @@ export function corpusFreshnessVerdict(now = Date.now()): FreshnessVerdict {
 }
 
 /**
+ * Печатает рынок живых баров рядом с версией корпуса.
+ *
+ * Существует потому, что эти две настройки уже разъезжались молча: путь к
+ * манифесту в `binance.ts` был прибит к `public/data/history`, а корпус
+ * переехал в кэш раннера — функция перестала находить манифест и вернула
+ * СПОТ, пока скрин считал по перпам. Обе половины машины при этом рапортовали
+ * успех. Единственная защита от повторения — показывать пару вместе на каждом
+ * прогоне, а не проверять каждую по отдельности.
+ */
+export function reportLiveMarket(): void {
+  const perp = klinesUrlFromCorpus().includes("fapi");
+  console.error(`рынок: корпус ${corpusVersion(corpusRoot())}, живые бары — ${perp ? "перпы" : "спот"}`);
+  if (marketIsAssumed(corpusRoot())) {
+    console.error(
+      "⚠️ манифеста корпуса нет — рынок ПРЕДПОЛОЖЕН спотовым, а не установлен. " +
+        "Если корпус фьючерсный, инкубатор догоняет не тот рынок. " +
+        "Чинить: npx tsx researcher/collect-candles.ts --scan",
+    );
+  }
+}
+
+/**
  * Падает, если хоть один источник недоступен. Вызывать в НАЧАЛЕ прогона:
  * секунда проверки против ночи испытаний, записанных в журнал как выводы.
  *
@@ -182,6 +205,7 @@ export function assertDataSources(): void {
         ].join("\n"),
       );
     }
+    reportLiveMarket();
     // Просроченность в пределах нормы — это НЕ повод останавливать ночь, но
     // молчать о ней нельзя: именно молчание и дало двухнедельный простой.
     if (fresh.level === "warn") {

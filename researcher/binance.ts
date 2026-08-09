@@ -14,10 +14,10 @@
  * механизм края владельца (ликвидации, охота за стопами) живёт на плече, а
  * плечо есть только на перпах; и торговать владелец будет перпы.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { Candle } from "../src/core/types/index.ts";
+import { HISTORY_DIR } from "./corpus.ts";
 import type { SignalTf } from "./grammar.ts";
 
 export const TF_SECONDS: Record<SignalTf, number> = {
@@ -31,21 +31,24 @@ const PERP_KLINES = "https://fapi.binance.com/fapi/v1/klines";
 
 /**
  * Рынок берётся из МАНИФЕСТА КОРПУСА, а не из константы, — чтобы источник
- * живых баров нельзя было забыть переключить вместе с корпусом. Манифеста
- * нет (старый спотовый корпус) → спот; `source: "perp"` → перпы.
+ * живых баров нельзя было забыть переключить вместе с корпусом.
  *
- * Развязка ровно та, из-за которой ошибка и прожила так долго: две настройки
- * в разных файлах, обязанные совпадать, рано или поздно разъезжаются молча.
+ * ⚠️ Каталог корпуса берётся из `HISTORY_DIR` (переопределяется переменной
+ * `RESEARCHER_HISTORY_DIR`), а НЕ прибит к `public/data/history`. Прибитый
+ * путь свёл на нет всю защиту: после переезда корпуса в кэш раннера манифест
+ * по старому адресу перестал существовать, функция молча возвращала СПОТ — и
+ * скрин считал по перпам, пока инкубатор догонял спотом. Ровно то расхождение,
+ * которое эта функция и должна была предотвращать.
+ *
+ * Отсутствие манифеста по-прежнему означает спот — это НЕ дефолт «на всякий
+ * случай», а известный факт: старый корпус в `public/data/history` собран без
+ * манифеста и доказанно спотовый (сверка байт в байт, см. collect-candles.ts).
+ * Ронять прогон на нём было бы ложной тревогой. Но молчать тоже нельзя, и за
+ * видимость отвечает предполётная проверка: она печатает выбранный рынок
+ * рядом с версией корпуса на каждом прогоне.
  */
-function klinesUrlFromCorpus(): string {
-  const manifest = join(
-    dirname(fileURLToPath(import.meta.url)),
-    "..",
-    "public",
-    "data",
-    "history",
-    "manifest.json",
-  );
+export function klinesUrlFromCorpus(historyDir = HISTORY_DIR): string {
+  const manifest = join(historyDir, "manifest.json");
   if (!existsSync(manifest)) return SPOT_KLINES;
   try {
     const { source } = JSON.parse(readFileSync(manifest, "utf-8")) as { source?: string };
@@ -55,7 +58,26 @@ function klinesUrlFromCorpus(): string {
   }
 }
 
-const BASE_URL = klinesUrlFromCorpus();
+/** Корпус лежит, а манифеста нет — рынок взят по умолчанию, а не установлен. */
+export function marketIsAssumed(historyDir = HISTORY_DIR): boolean {
+  if (existsSync(join(historyDir, "manifest.json"))) return false;
+  try {
+    return readdirSync(historyDir).some((f) => f.endsWith(".json.gz"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ленивая и кэшированная: `HISTORY_DIR` фиксируется при загрузке модуля, а
+ * вычислять URL на этапе импорта значит падать в тестах, которые корпуса не
+ * видят и трогать сеть не собираются.
+ */
+let cachedBaseUrl: string | null = null;
+function baseUrl(): string {
+  if (cachedBaseUrl === null) cachedBaseUrl = klinesUrlFromCorpus();
+  return cachedBaseUrl;
+}
 const PAGE_LIMIT = 1000;
 const MAX_PAGES = 20;
 const RETRY_AFTER_CAP_SEC = 60;
@@ -78,7 +100,7 @@ export async function fetchBinanceKlines(
   const out: Candle[] = [];
   let startMs = startTimeSec * 1000;
   for (let page = 0; page < MAX_PAGES; page++) {
-    const url = `${BASE_URL}?symbol=${symbol}&interval=${tf}&startTime=${startMs}&limit=${PAGE_LIMIT}`;
+    const url = `${baseUrl()}?symbol=${symbol}&interval=${tf}&startTime=${startMs}&limit=${PAGE_LIMIT}`;
     const res = await fetchWithRetry(url);
     if (!res.ok) throw new Error(`Binance ${res.status} для ${symbol} ${tf}`);
     const rows = (await res.json()) as [number, string, string, string, string, string, number][];
