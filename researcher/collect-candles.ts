@@ -495,16 +495,29 @@ async function main(): Promise<void> {
     // Они просто перестают дозаписываться и стареют, а сменить состав
     // вселенной можно правкой universe-perp.json — то есть коммитом.
     const declared = committedUniverse();
-    const known = new Set(scanCorpus(outDir).map((c) => c.symbol));
-    const wanted = declared.length > 0 ? new Set(declared) : known;
-    if (wanted.size > 0) {
-      const before = symbols.length;
-      symbols = symbols.filter((s) => wanted.has(s));
-      if (symbols.length < before) {
+    const before = symbols.length;
+    if (declared.length > 0) {
+      // Список берётся КАК ЕСТЬ, без пересечения с листингом источника.
+      //
+      // Пересечение выглядело безобидной страховкой и молча теряло пять
+      // монет: в архиве они лежат под ФЬЮЧЕРСНЫМИ именами (1000SHIBUSDT), а
+      // список объявлен спотовыми — алиас применяется позже, при запросе, и
+      // до него дело не доходило. Отфильтровать по чужому неймингу — значит
+      // отменить собственную таблицу переименований.
+      //
+      // Отсутствующий в источнике символ и без фильтра безопасен: запрос
+      // вернёт пусто, и это видно в отчёте.
+      symbols = declared;
+      console.error(
+        `Вселенная объявлена в git: ${symbols.length} символов ` +
+          `(источник предлагает ${before}). Менять состав — правкой universe-perp.json.`,
+      );
+    } else {
+      const known = new Set(scanCorpus(outDir).map((c) => c.symbol));
+      if (known.size > 0) {
+        symbols = symbols.filter((s) => known.has(s));
         console.error(
-          `Дозапись: ${symbols.length} символов из ${before} доступных в источнике ` +
-            `(${known.size > 0 ? "по корпусу" : "по списку вселенной из git"}). ` +
-            "Расширение вселенной — только с --full или --symbols.",
+          `Списка вселенной нет — дозапись по корпусу: ${symbols.length} из ${before}.`,
         );
       }
     }
