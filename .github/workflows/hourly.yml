@@ -41,8 +41,26 @@ jobs:
           RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
         run: npx tsx researcher/journal-sync.ts restore
 
+      # Тот же кэш корпуса, что и у ночи: инкубатор обязан считать по ТОМУ ЖЕ
+      # рынку, что и скрин. Иначе кандидат проверялся бы на фьючерсах, а
+      # догонялся спотом — и форвард измерял бы не то, что отбор.
+      - name: Cache candle corpus
+        uses: actions/cache@v4
+        with:
+          path: corpus
+          key: corpus-perp-${{ github.run_id }}
+          restore-keys: |
+            corpus-perp-
+
+      - name: Top up corpus from exchange
+        continue-on-error: true
+        env:
+          RESEARCHER_HISTORY_DIR: ${{ github.workspace }}/corpus
+        run: npx tsx researcher/collect-candles.ts --source perp --tf 1h,4h --out corpus
+
       - name: Catch up incubation + supervision
         env:
+          RESEARCHER_HISTORY_DIR: ${{ github.workspace }}/corpus
           RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
           RESEARCHER_VAULT_DIR: ${{ github.workspace }}/data/vault
           RESEARCHER_STATUS_DIR: ${{ github.workspace }}/status

@@ -20,10 +20,23 @@
  */
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { HISTORY_DIR } from "./corpus.ts";
 
 /** Корень собранных данных — тот же дефолт, что у читателей CSV. */
 export function collectRoot(): string {
   return process.env.COLLECT_DIR ?? join(process.env.HOME ?? "", ".chartlab", "data-repo", "market");
+}
+
+/**
+ * Корень корпуса свечей. Читается В МОМЕНТ ВЫЗОВА, а не при импорте — как и
+ * `collectRoot`. `HISTORY_DIR` в corpus.ts вычисляется один раз при загрузке
+ * модуля, и этого достаточно для прогона (переменная задана воркфлоу до
+ * старта), но проверять источник по значению, замороженному порядком
+ * импортов, — способ однажды измерить не тот каталог. Здесь оба источника
+ * подчиняются одному правилу.
+ */
+export function corpusRoot(): string {
+  return process.env.RESEARCHER_HISTORY_DIR ?? HISTORY_DIR;
 }
 
 export interface SourceHealth {
@@ -59,14 +72,47 @@ function countCsv(dir: string): number {
   }
 }
 
+/**
+ * Минимум файлов корпуса. 324 файла = 162 символа × 2 ТФ; порог 100 отличает
+ * «кэш пустой» от «кэш есть» и не придирается к недокачанным символам.
+ */
+const CORPUS_REQUIRED = 100;
+
+function countCorpus(dir: string): number {
+  if (!existsSync(dir)) return 0;
+  try {
+    return readdirSync(dir).filter((f) => f.endsWith(".json.gz")).length;
+  } catch {
+    return 0;
+  }
+}
+
 /** Состояние всех источников — для отчёта, статуса и панели экрана. */
 export function dataSourceHealth(): SourceHealth[] {
   const root = collectRoot();
-  return SOURCES.map(({ name, sub, required }) => {
+  const sources = SOURCES.map(({ name, sub, required }) => {
     const dir = join(root, sub);
     const files = countCsv(dir);
     return { name, dir, exists: existsSync(dir), files, required, ok: files >= required };
   });
+
+  // Корпус свечей проверяется отдельно: он живёт НЕ в COLLECT_DIR, а в
+  // собственном каталоге (в облаке — кэш раннера, локально — public/data).
+  // Без этой проверки пустой кэш дал бы ночь без единой сделки, и журнал
+  // записал бы это как вывод о рынке — ровно та авария, от которой этот
+  // модуль и защищает.
+  const corpusDir = corpusRoot();
+  const corpusFiles = countCorpus(corpusDir);
+  sources.push({
+    name: "корпус свечей",
+    dir: corpusDir,
+    exists: existsSync(corpusDir),
+    files: corpusFiles,
+    required: CORPUS_REQUIRED,
+    ok: corpusFiles >= CORPUS_REQUIRED,
+  });
+
+  return sources;
 }
 
 /**
@@ -83,7 +129,7 @@ export function assertDataSources(): void {
 
   const lines = broken.map(
     (h) =>
-      `  ${h.name}: ${h.exists ? `каталог есть, но CSV ${h.files} < ${h.required}` : "КАТАЛОГА НЕТ"} — ${h.dir}`,
+      `  ${h.name}: ${h.exists ? `каталог есть, но файлов ${h.files} < ${h.required}` : "КАТАЛОГА НЕТ"} — ${h.dir}`,
   );
   throw new Error(
     [
@@ -91,10 +137,15 @@ export function assertDataSources(): void {
       ...lines,
       "",
       `COLLECT_DIR = ${process.env.COLLECT_DIR ?? "(не задан, взят дефолт ~/.chartlab/data-repo/market)"}`,
+      `RESEARCHER_HISTORY_DIR = ${process.env.RESEARCHER_HISTORY_DIR ?? "(не задан, взят дефолт public/data/history)"}`,
       "",
       "Прогон ОСТАНОВЛЕН намеренно. Испытания без источника дали бы ноль сделок,",
       "и это записалось бы в журнал как вывод о рынке, а не как поломка окружения.",
-      "Проверь COLLECT_DIR в воркфлоу и что приватный data-репо смонтирован.",
+      "",
+      "Куда смотреть:",
+      "  фандинг и метрики — COLLECT_DIR и монтирование приватного data-репо;",
+      "  корпус свечей — RESEARCHER_HISTORY_DIR и шаг дозаписи с биржи",
+      "  (в облаке корпус лежит в кэше раннера, а не в git: он воспроизводим).",
     ].join("\n"),
   );
 }

@@ -24,7 +24,20 @@ useCsvFunding();
 useCsvMetrics();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-export const HISTORY_DIR = join(__dirname, "..", "public", "data", "history");
+/**
+ * Каталог корпуса свечей.
+ *
+ * Переопределяется `RESEARCHER_HISTORY_DIR`, потому что корпус — это
+ * ВОСПРОИЗВОДИМЫЙ артефакт, а не хранимый актив: сборщик (collect-candles)
+ * скачивает его с биржи заново и дозаписывает хвост. Хранить его в git
+ * вредно вдвойне — каждое обновление переписывает все 324 сжатых файла
+ * целиком, и репозиторий растёт на ~100 МБ за раз, ничего не выигрывая.
+ *
+ * Журнал испытаний невосполним и потому хранится; корпус восполним и потому
+ * кэшируется. Разные вещи — разное обращение.
+ */
+export const HISTORY_DIR =
+  process.env.RESEARCHER_HISTORY_DIR ?? join(__dirname, "..", "public", "data", "history");
 
 /** Доля вселенной, уходящая в отложенный набор (holdout). */
 export const HOLDOUT_FRACTION = 5; // каждый пятый ≈ 20%

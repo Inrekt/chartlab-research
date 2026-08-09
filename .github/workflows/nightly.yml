@@ -46,6 +46,29 @@ jobs:
           RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
         run: npx tsx researcher/journal-sync.ts restore
 
+      # Корпус свечей — ВОСПРОИЗВОДИМЫЙ артефакт, а не хранимый актив: он
+      # скачивается с биржи и дозаписывается хвостом. Поэтому он лежит в кэше
+      # раннера, а не в git: хранение переписывало бы все 324 сжатых файла при
+      # каждом обновлении и растило репозиторий на ~100 МБ за раз, ничего не
+      # выигрывая. Ключ с датой — раз в сутки кэш обновляется, restore-keys
+      # подхватывает вчерашний, и сборщику остаётся дописать только хвост.
+      - name: Cache candle corpus
+        uses: actions/cache@v4
+        with:
+          path: corpus
+          key: corpus-perp-${{ github.run_id }}
+          restore-keys: |
+            corpus-perp-
+
+      # Дозапись хвоста. На пустом кэше это полная закачка (минуты), дальше —
+      # только свежие бары. Прогон НЕ ПАДАЕТ, если биржа недоступна: у нас уже
+      # есть предполётная проверка свежести, она и решит, можно ли считать.
+      - name: Top up corpus from exchange
+        continue-on-error: true
+        env:
+          RESEARCHER_HISTORY_DIR: ${{ github.workspace }}/corpus
+        run: npx tsx researcher/collect-candles.ts --source perp --tf 1h,4h --out corpus
+
       - name: Run the night (both universes)
         env:
           RESEARCHER_DATA_DIR: ${{ github.workspace }}/data/ledger
@@ -57,6 +80,13 @@ jobs:
           # каждом баре, и семейство умирает как «мало сделок» — так было
           # убито 212 испытаний funding_pressure (все с нулём сделок).
           COLLECT_DIR: ${{ github.workspace }}/data/market
+          # ⚠️ ГРАНИЦА ЭПОХИ. Корпус из кэша — ФЬЮЧЕРСНЫЙ (162 перпа с
+          # 2019-09), тогда как прежний в public/data/history был СПОТОВЫМ.
+          # Это разные рынки: цена похожа, но фандинг, открытый интерес и
+          # ликвидации существуют только у вторых — а вся наша микроструктура
+          # построена на них. Испытания до и после этой строки НЕ СРАВНИМЫ, и
+          # различаются они по полю corpus_version в журнале.
+          RESEARCHER_HISTORY_DIR: ${{ github.workspace }}/corpus
           RESEARCHER_NIGHT_N: "2000"
         run: npx tsx researcher/nightly.ts > night-summary.json
 
