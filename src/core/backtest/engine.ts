@@ -27,6 +27,13 @@ interface OpenPosition {
   riskBudget: number;
   /** Ещё не исполненные доборы, по возрастанию расстояния от входа. */
   pendingAdds: PendingAdd[];
+  /**
+   * P&L, уже зафиксированный частичным тейком (в валюте цены, не в R).
+   * Складывается с результатом остатка в `closeTrade`.
+   */
+  realizedPnl: number;
+  /** Цена частичного тейка; null — сопровождение не задано или уже сработало. */
+  scaleOutPrice: number | null;
 }
 
 /**
@@ -215,6 +222,20 @@ function openPositionAt(
   if (!levels) return null;
   const { stopPrice, targetPrice } = levels;
 
+  // Доля вне (0;1) означала бы либо пустой тейк, либо обнуление позиции,
+  // которая при этом продолжила бы жить до стопа. Конфиг строит наша же
+  // грамматика, поэтому это ошибка программиста: падать надо сразу и громко,
+  // а не мерить месяцами не то.
+  const so = config.exit.scaleOut;
+  if (so && !(so.fraction > 0 && so.fraction < 1)) {
+    throw new Error(
+      `scaleOut.fraction должна быть строго между 0 и 1, получено ${so.fraction}`,
+    );
+  }
+  if (so && !(so.atR > 0)) {
+    throw new Error(`scaleOut.atR должна быть положительной, получено ${so.atR}`);
+  }
+
   const plan = planScaleIn(config, entryPrice, stopPrice, signalIndex, liq);
 
   return {
@@ -229,6 +250,15 @@ function openPositionAt(
     costBasis: plan.firstWeight * entryPrice,
     riskBudget: levels.risk,
     pendingAdds: plan.adds,
+    realizedPnl: 0,
+    // Уровень частичного тейка отсчитывается от ПЕРВОГО входа и ширины стопа
+    // на единичном объёме — той же линейки, что и знаменатель R. Иначе
+    // варианты с добором и без него мерились бы разными «R».
+    scaleOutPrice: config.exit.scaleOut
+      ? config.direction === "long"
+        ? entryPrice + config.exit.scaleOut.atR * levels.risk
+        : entryPrice - config.exit.scaleOut.atR * levels.risk
+      : null,
   };
 }
 
@@ -317,6 +347,38 @@ function advanceOpenPosition(
   // долив всегда улучшает среднюю цену).
   if (hitStop || !hitTarget) fillPendingAdds(open, bar);
 
+  /*
+   * Частичный тейк и перенос стопа в безубыток.
+   *
+   * Порядок тиков внутри бара неизвестен, и сомнение трактуется ПРОТИВ
+   * стратегии — как и везде в этом движке. Поэтому на баре, где задет и стоп,
+   * и уровень частичного тейка, считается, что первым сработал СТОП: позиция
+   * уходит целиком в убыток, частичная фиксация не засчитывается. Иначе
+   * прибыль росла бы из предположения о порядке тиков, а это ровно тот способ
+   * приукрасить результат, который здесь запрещён.
+   *
+   * Перенос стопа к средней цене входа делается СРАЗУ, но на этом же баре уже
+   * не проверяется: цена, дошедшая до уровня тейка, могла вернуться к входу в
+   * том же баре, и мы бы не узнали. Проверка начнётся со следующего бара.
+   */
+  if (open.scaleOutPrice !== null && !hitStop) {
+    const reached =
+      open.direction === "long" ? bar.high >= open.scaleOutPrice : bar.low <= open.scaleOutPrice;
+    if (reached) {
+      const so = config.exit.scaleOut!;
+      const closedUnits = open.units * so.fraction;
+      const avgEntry = open.units > 0 ? open.costBasis / open.units : open.entryPrice;
+      open.realizedPnl +=
+        open.direction === "long"
+          ? closedUnits * (open.scaleOutPrice - avgEntry)
+          : closedUnits * (avgEntry - open.scaleOutPrice);
+      open.units -= closedUnits;
+      open.costBasis = open.units * avgEntry;
+      open.scaleOutPrice = null;
+      if (so.toBreakeven) open.stopPrice = avgEntry;
+    }
+  }
+
   if (!hitStop && !hitTarget && !timedOut) return null;
   // Гэп через стоп исполняется по ОТКРЫТИЮ, а не по цене стопа: если бар
   // открылся уже за стопом (каскад ликвидаций, ночная новость, разрыв
@@ -351,10 +413,13 @@ function closeTrade(symbol: string, open: OpenPosition, exitTime: number, exitPr
   const avgEntry = open.units > 0 ? open.costBasis / open.units : open.entryPrice;
   // P&L взвешен по объёму, а знаменатель R — ширина стопа от ПЕРВОГО входа на
   // единичном объёме. Так вариант с добором и без него мерятся одной линейкой.
+  // Уже зафиксированное частичным тейком складывается с результатом остатка:
+  // без этого частичная фиксация просто исчезала бы из P&L.
   const pnl =
-    open.direction === "long"
+    open.realizedPnl +
+    (open.direction === "long"
       ? open.units * exitPrice - open.costBasis
-      : open.costBasis - open.units * exitPrice;
+      : open.costBasis - open.units * exitPrice);
   const rMultiple = open.riskBudget === 0 ? 0 : pnl / open.riskBudget;
 
   return {
