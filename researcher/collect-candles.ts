@@ -529,7 +529,12 @@ async function main(): Promise<void> {
         existing.length > 0 ? existing[existing.length - 1].time * 1000 + TF_MS[tf] : 0;
       // Файл называем спотовым именем (им пользуются фандинг, метрики и весь
       // остальной код), а запрашиваем — фьючерсным.
-      const remote = source === "perp" ? (PERP_ALIASES[symbol] ?? symbol) : symbol;
+      // Алиасы нужны ОБОИМ фьючерсным источникам: и REST, и архив живут на
+      // одном рынке и знают монету как 1000SHIBUSDT. Забыть их для архива —
+      // ровно тот баг, ради которого таблица и заводилась: пять ликвидных
+      // мем-коинов молча выпадали как «нет данных» (162 в списке → 157 в
+      // корпусе, разница ровно пять).
+      const remote = source === "spot" ? symbol : (PERP_ALIASES[symbol] ?? symbol);
       try {
         const fresh = await fetchKlines(source, remote, tf, fromMs);
         const merged = mergeCandles(existing, fresh);
