@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-09T07:54:16.766Z",
+  "generatedAt": "2026-08-09T07:59:31.186Z",
   "run": {
     "durationMin": 0,
     "nextNightUtc": "2026-08-09T21:37:00.000Z",
-    "lastTickUtc": "2026-08-09T07:54:16.766Z"
+    "lastTickUtc": "2026-08-09T07:59:31.186Z"
   },
   "ledger": {
     "trials": 56374,
@@ -29,7 +29,7 @@
       },
       {
         "name": "корпус свечей",
-        "files": 314,
+        "files": 324,
         "required": 100,
         "ok": true
       }
