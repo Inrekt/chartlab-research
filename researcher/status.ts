@@ -17,6 +17,7 @@ import type { IncubationBook } from "./incubationBook.ts";
 import type { ScreenSummary } from "./screen.ts";
 import type { IncubationSummary } from "./incubate.ts";
 import type { SupervisionSummary } from "./supervise.ts";
+import type { SilenceVerdict } from "./watchdog.ts";
 
 /** Сколько строк журнала показывает лента монитора. */
 export const JOURNAL_FEED_SIZE = 40;
@@ -123,6 +124,12 @@ export interface ResearcherStatus {
    * тревога перестанет что-либо значить.
    */
   failure?: string | null;
+  /**
+   * Сторож молчания: пропущенная ночь. Экран обязан показывать её как ТРЕВОГУ,
+   * а не как обычные вчерашние цифры — иначе мёртвая машина выглядит спокойной.
+   * Необязательно: статусы, записанные до появления поля, читаются как есть.
+   */
+  silence?: SilenceVerdict | null;
 }
 
 /** Следующее срабатывание ночного крона после `now`. */
@@ -158,6 +165,8 @@ export interface BuildStatusInput {
   previous?: ResearcherStatus | null;
   durationMin?: number | null;
   now?: Date;
+  /** Вердикт сторожа молчания; отсутствует — тревоги нет. */
+  silence?: SilenceVerdict | null;
   /**
    * Здоровье источников. Передаётся снаружи, а не читается здесь: buildStatus
    * обязан оставаться чистым, иначе его тесты начнут зависеть от того, что
@@ -251,6 +260,10 @@ export function buildStatus(input: BuildStatusInput): ResearcherStatus {
         : isNight
           ? null
           : (input.previous?.failure ?? null),
+    // Сторож судит о НОЧИ, а считает его тик — поэтому вердикт переносится из
+    // предыдущего статуса, когда текущий прогон его не выдал (ночь о своём
+    // молчании судить не может по определению: раз она идёт, молчания нет).
+    silence: input.silence !== undefined ? input.silence : (input.previous?.silence ?? null),
     universes: isNight
       ? input.screens.map((screen) => ({
           tf: screen.tf,

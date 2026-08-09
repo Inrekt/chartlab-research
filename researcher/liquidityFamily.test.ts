@@ -11,8 +11,17 @@ import {
 } from "./grammar.ts";
 import { neighborSpecs } from "./screen.ts";
 
-const familySpecs = (): CandidateSpec[] =>
-  [...enumerateAll()].filter((s) => setupFamily(s.setup) === "liquidity_magnet");
+/*
+ * Перечисление ВСЕГО пространства стоит секунды, а тестов в файле дюжина —
+ * без запоминания файл упирался в таймаут по мере роста грамматики (упёрся,
+ * когда добавилось семейство свипа). Считаем один раз: перечисление
+ * детерминированное, делить результат между тестами безопасно.
+ */
+let allSpecs: CandidateSpec[] | null = null;
+const familySpecs = (): CandidateSpec[] => {
+  allSpecs ??= [...enumerateAll()];
+  return allSpecs.filter((s) => setupFamily(s.setup) === "liquidity_magnet");
+};
 
 describe("семейство ликвидити-магнит", () => {
   test("размер ровно такой, как записано в пре-регистрации: 648", () => {

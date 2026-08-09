@@ -10,6 +10,18 @@ import { writeStatus } from "./statusFile.ts";
 import { DB_PATH, DEFAULT_VAULT_DIR } from "./paths.ts";
 import { assertDataSources, corpusFreshnessVerdict } from "./preflight.ts";
 import { runSupervision } from "./supervise.ts";
+import { nightSilenceVerdict } from "./watchdog.ts";
+import { TrialLedger } from "./ledger.ts";
+
+/** Отметку ставит только ДОШЕДШАЯ ДО КОНЦА ночь — см. ledger.markNightCompleted. */
+function readLastNightCompleted(): string | null {
+  const ledger = new TrialLedger(DB_PATH);
+  try {
+    return ledger.lastNightCompleted();
+  } finally {
+    ledger.close();
+  }
+}
 
 // Инкубатор гоняет тот же движок, что и ночь. Без источников кандидат набирал
 // бы ноль форвард-сделок и умер бы «по календарю» через 365 дней — с виду
@@ -81,6 +93,22 @@ const supervision = await runSupervision({
   log,
   source,
 });
+// Сторож молчания. Ночь роняется расписанием GitHub БЕЗ следа (06.08 не
+// состоялась, 07.08 опоздала на 3.5 часа), и машина, не работавшая сутки,
+// выглядит как машина, которой нечего делать. Тик — единственный процесс с
+// независимым расписанием, поэтому сторожем назначен он.
+const silence = nightSilenceVerdict(readLastNightCompleted());
+if (silence.level !== "ok") log(silence.message);
+
 // screens: [] ⇒ воронка последней ночи переносится из предыдущего статуса.
-writeStatus({ screens: [], incubation, supervision });
-console.log(JSON.stringify({ at: new Date().toISOString(), incubation, supervision }));
+writeStatus({ screens: [], incubation, supervision, silence });
+console.log(JSON.stringify({ at: new Date().toISOString(), incubation, supervision, silence }));
+
+// Падение — ПОСЛЕ записи статуса: тревога обязана попасть на экран, даже когда
+// тик уходит красным. Красный тик здесь не поломка тика, а единственный
+// доступный канал крика, пока нет Telegram: две пропущенные ночи подряд — это
+// мёртвое расписание, и оно не должно выглядеть тишиной.
+if (silence.level === "fail") {
+  log(silence.message);
+  process.exitCode = 1;
+}

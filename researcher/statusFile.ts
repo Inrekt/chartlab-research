@@ -15,6 +15,7 @@ import { corpusFreshnessVerdict, dataSourceHealth } from "./preflight.ts";
 import type { ScreenSummary } from "./screen.ts";
 import { buildStatus, type ResearcherStatus, type StatusSources } from "./status.ts";
 import type { SupervisionSummary } from "./supervise.ts";
+import type { SilenceVerdict } from "./watchdog.ts";
 
 /**
  * Снимок здоровья входов на момент записи статуса.
@@ -68,6 +69,12 @@ export function writeStatus(args: {
   statusPath?: string;
   /** Причина падения прогона; не задана — прогон дошёл до конца. */
   failure?: string | null;
+  /**
+   * Вердикт сторожа молчания. Попадает в статус, чтобы пропущенная ночь была
+   * ВИДНА на экране, а не только в логе упавшего тика: экран, показывающий
+   * вчерашние хорошие цифры мёртвой машины, — худший из возможных исходов.
+   */
+  silence?: SilenceVerdict | null;
 }): void {
   const statusPath = args.statusPath ?? STATUS_PATH;
   const previous = readStatus(statusPath);

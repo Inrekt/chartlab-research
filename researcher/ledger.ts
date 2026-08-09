@@ -516,6 +516,31 @@ export class TrialLedger {
     }));
   }
 
+  /**
+   * Отметка «ночь дошла до конца» — сторож молчания.
+   *
+   * Ставится ТОЛЬКО после полного прогона, а не в начале: смысл отметки в том,
+   * что ночь ЗАВЕРШИЛАСЬ, и упавшая на середине не должна выглядеть живой.
+   *
+   * Живёт в журнале, а не в статусе, потому что журнал лежит в приватном
+   * дата-репозитории и восстанавливается обоими воркфлоу. Статус же
+   * перезаписывается каждым тиком, и отличить в нём «ночь была» от «тик
+   * переписал воронку прошлой ночи» нельзя.
+   */
+  markNightCompleted(atIso?: string): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO meta(key, value) VALUES('last_night_completed', ?)")
+      .run(atIso ?? this.now());
+  }
+
+  /** Когда ночь в последний раз дошла до конца; null — ни разу. */
+  lastNightCompleted(): string | null {
+    const row = this.db
+      .prepare("SELECT value FROM meta WHERE key = 'last_night_completed'")
+      .get() as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
   /** N для дефляции: сырое число попыток и число кластеров (N_eff). */
   counts(): TrialCounts {
     const row = this.db

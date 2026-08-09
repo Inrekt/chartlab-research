@@ -267,7 +267,21 @@ async function main(): Promise<void> {
     incubation,
     supervision,
     durationMin: Math.round((Date.now() - startedAt) / 60_000),
+    // Ночь дошла до конца — значит молчания нет, и вчерашняя тревога снимается.
+    // Иначе одна пропущенная ночь красила бы панель навсегда, и сторож
+    // перестал бы что-либо значить.
+    silence: null,
   });
+
+  // Отметка ставится ПОСЛЕДНЕЙ и только здесь: смысл её в том, что ночь
+  // ЗАВЕРШИЛАСЬ. Упавшая на середине отметки не оставляет и будет честно
+  // видна сторожу как пропущенная.
+  const ledger = new TrialLedger(DB_PATH);
+  try {
+    ledger.markNightCompleted();
+  } finally {
+    ledger.close();
+  }
   console.log(JSON.stringify({ screens, incubation, supervision }, null, 2));
 }
 

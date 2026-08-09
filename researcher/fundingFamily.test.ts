@@ -3,7 +3,13 @@ import { describe, expect, test } from "vitest";
 import { enumerateAll, exitsFor, setupFamily, setupNeighbors, toStrategyConfig } from "./grammar.ts";
 import { neighborSpecs } from "./screen.ts";
 
-const familySpecs = () => [...enumerateAll()].filter((s) => setupFamily(s.setup) === "funding_pressure");
+// Перечисление всего пространства запоминается: оно детерминированное, а
+// вызовов в файле много — см. тот же приём в liquidityFamily.test.ts.
+let allSpecs: ReturnType<typeof enumerateAll> extends Iterable<infer T> ? T[] : never[] = [] as never[];
+const familySpecs = () => {
+  if (allSpecs.length === 0) allSpecs = [...enumerateAll()] as typeof allSpecs;
+  return allSpecs.filter((s) => setupFamily(s.setup) === "funding_pressure");
+};
 
 describe("семейство «перегруженное плечо»", () => {
   test("размер ровно такой, как записано в пре-регистрации: 216", () => {
