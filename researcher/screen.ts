@@ -779,7 +779,9 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     const familyVar = deflationVarianceFor(family);
     // Вердикт — по очищенной оценке; наивная пишется рядом для сравнимости
     // ночей и обратимости перехода.
-    const dsrGate = gateDsr(netRs, nEffective, familyVar, batchSharpeVariance);
+    // familiesTried — поправка Бонферрони на число испытанных семейств:
+    // внутрисемейная планка корректна только если семейств одно.
+    const dsrGate = gateDsr(netRs, nEffective, familyVar, batchSharpeVariance, familiesTried);
     ledger.recordEval(f.id, "dsr_accounting", {
       family,
       nEffectiveFamily: nEffective,

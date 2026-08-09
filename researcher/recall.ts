@@ -159,6 +159,8 @@ export interface RecallOpts {
   sigma: number;
   nEffective: number;
   varSR: number;
+  /** Число испытанных семейств — поправка Бонферрони на межсемейную множественность. */
+  families?: number;
   seed: number;
 }
 
@@ -213,7 +215,7 @@ export function recallBench(opts: RecallOpts): RecallRow[] {
           }),
         cost_stress: () => gateCostStress(trades),
         temporal: () => gateTemporal(trades),
-        dsr: () => gateDsr(netRMultiples(trades), opts.nEffective, opts.varSR),
+        dsr: () => gateDsr(netRMultiples(trades), opts.nEffective, opts.varSR, undefined, opts.families),
         wilson: () => gateWilson(stats, stats.avgRR),
       };
 
@@ -289,6 +291,7 @@ async function main(): Promise<void> {
     // среднего 0.185), и среднее описывало бы ночь, которой не было.
     nEffective: Number(arg("neff", "8445")),
     varSR: Number(arg("varsr", "0.0158")),
+    families: Number(arg("families", "1")),
     seed: Number(arg("seed", "7")),
   };
 

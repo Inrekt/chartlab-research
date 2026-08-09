@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { expectedMaxSharpe, deflatedSharpe } from "./stats.ts";
-import { DSR_MIN } from "./gates.ts";
+import { DSR_MIN, dsrMinForFamilies } from "./gates.ts";
 import { ENTRY_GATE_DELTA, MAX_INCUBATION_DAYS } from "./incubate.ts";
 import { dailySigma, expectedAcceptSampleSize } from "./sprt.ts";
 
@@ -18,18 +18,26 @@ import { dailySigma, expectedAcceptSampleSize } from "./sprt.ts";
  * этого не дошёл никто, поэтому расхождение никак себя не проявило.
  */
 
-/** Требуемый Шарп/сделку, чтобы DSR ≥ 0.95 при данных N и varSR. */
-function screenDemands(nEffective: number, varSR: number, trades = 1000): number {
+/** Требуемый Шарп/сделку, чтобы DSR прошёл при данных N, varSR и пороге. */
+function screenDemands(
+  nEffective: number,
+  varSR: number,
+  trades = 1000,
+  dsrMin: number = DSR_MIN,
+): number {
   const sr0 = expectedMaxSharpe(nEffective, varSR);
   let lo = 0;
   let hi = 3;
   for (let i = 0; i < 80; i++) {
     const mid = (lo + hi) / 2;
-    if (deflatedSharpe(mid, sr0, trades, 0, 3) >= DSR_MIN) hi = mid;
+    if (deflatedSharpe(mid, sr0, trades, 0, 3) >= dsrMin) hi = mid;
     else lo = mid;
   }
   return hi;
 }
+
+/** Сколько семейств в журнале сегодня. Растёт — планка растёт всем. */
+const FAMILIES_TODAY = 14;
 
 /**
  * Входной порог инкубатора в тех же единицах.
@@ -109,5 +117,50 @@ describe("входной порог против календаря", () => {
     // простой способ незаметно превратить инкубацию в формальность.
     expect(daysToDecision(0.08, MEASURED[1])).toBeGreaterThan(MAX_INCUBATION_DAYS);
     expect(ENTRY_GATE_DELTA).toBeGreaterThan(0.08);
+  });
+});
+
+
+describe("поправка на число семейств", () => {
+  test("одно семейство — поправки нет", () => {
+    expect(dsrMinForFamilies(1)).toBeCloseTo(DSR_MIN, 10);
+  });
+
+  test("порог растёт с числом семейств по Бонферрони", () => {
+    // 1 − (1 − 0.95)/F. Смысл: α делится между экспериментами, а каждое
+    // семейство — отдельный эксперимент.
+    expect(dsrMinForFamilies(14)).toBeCloseTo(1 - 0.05 / 14, 10);
+    expect(dsrMinForFamilies(50)).toBeGreaterThan(dsrMinForFamilies(14));
+    expect(dsrMinForFamilies(14)).toBeGreaterThan(dsrMinForFamilies(5));
+  });
+
+  test("мусорный вход не роняет ворота в свободный проход", () => {
+    // Ноль или дробь означали бы деление на бессмыслицу; порог обязан
+    // деградировать в БОЛЕЕ строгую сторону, а не в более мягкую.
+    expect(dsrMinForFamilies(0)).toBeCloseTo(DSR_MIN, 10);
+    expect(dsrMinForFamilies(-3)).toBeCloseTo(DSR_MIN, 10);
+    expect(dsrMinForFamilies(2.7)).toBeCloseTo(dsrMinForFamilies(2), 10);
+  });
+
+  test("новое семейство поднимает планку СЕБЕ, а не только другим", () => {
+    // Это и есть весь смысл правки: до неё запрет «не плодить семейства»
+    // держался только на честном слове исполнителя.
+    const varSR = 0.0158 * 0.42;
+    const before = screenDemands(10, varSR, 1000, dsrMinForFamilies(FAMILIES_TODAY));
+    const after = screenDemands(10, varSR, 1000, dsrMinForFamilies(FAMILIES_TODAY + 1));
+    expect(after).toBeGreaterThan(before);
+  });
+
+  test("СТРАЖ: ворота ещё не строже двери инкубатора", () => {
+    // При росте числа семейств требование ворот однажды перегонит вход в
+    // инкубатор (0.24), и вернётся ситуация «кандидат проходит ворота и
+    // умирает следующей строкой». Тест обязан упасть ДО того, как это
+    // случится в бою, и заставить назвать оба числа сразу.
+    const varSR = 0.0158 * 0.42;
+    const demands = screenDemands(10, varSR, 1000, dsrMinForFamilies(FAMILIES_TODAY));
+    expect(
+      demands,
+      `ворота требуют ${demands.toFixed(3)} при входе в инкубатор ${INCUBATOR_DEMANDS}`,
+    ).toBeLessThan(INCUBATOR_DEMANDS);
   });
 });

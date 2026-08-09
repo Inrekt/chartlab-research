@@ -273,6 +273,27 @@ export const DSR_MIN = 0.95;
  * Кандидаты без отпечатка носят эвристический ключ (≤54 штук) — лёгкое
  * завышение N, то есть в строгую сторону.
  */
+/**
+ * Порог DSR с поправкой на число ИСПЫТАННЫХ СЕМЕЙСТВ (Бонферрони).
+ *
+ * Внутрисемейная планка (GATE_VERSION=7) корректна ровно при условии, что
+ * каждое семейство — отдельный эксперимент со своим контролем ошибки. Но
+ * экспериментов много, и вероятность хотя бы одного ложного открытия равна
+ * 1 − (1 − α)^F: при α=0.05 и F=14 это 51%. Никакие внутрисемейные ворота
+ * этого не видят, потому что каждое смотрит только на себя.
+ *
+ * Ключевое свойство: каждое новое семейство поднимает планку ВСЕМ, включая
+ * себе. Плодить семейства перестаёт быть выгодным — а до этой правки запрет
+ * держался только на честном слове исполнителя.
+ *
+ * Поправка мягкая: требуемый Шарп на сделку растёт с 0.181 до 0.227 при росте
+ * F с 1 до 50. Пре-регистрация: docs/family-multiplicity-preregistration.md.
+ */
+export function dsrMinForFamilies(familiesTried: number): number {
+  const F = Math.max(1, Math.floor(familiesTried));
+  return 1 - (1 - DSR_MIN) / F;
+}
+
 export function gateDsr(
   netRMultiples: readonly number[],
   nEffective: number,
@@ -284,6 +305,11 @@ export function gateDsr(
    * Пре-регистрация: docs/dsr-variance-preregistration.md.
    */
   comparisonVariance?: number,
+  /**
+   * Сколько РАЗНЫХ семейств когда-либо подавалось. Не задано — поправки нет
+   * (прежнее поведение, для стендов и тестов, где семейство одно).
+   */
+  familiesTried?: number,
 ): GateResult {
   const T = netRMultiples.length;
   if (T < 2) return fail("DSR: меньше двух сделок", { T });
@@ -311,9 +337,18 @@ export function gateDsr(
       deflatedSharpe(sr, sr0Shadow, T, m.skewness, m.kurtosis).toFixed(4),
     );
   }
-  return dsr >= DSR_MIN
+  const threshold = familiesTried === undefined ? DSR_MIN : dsrMinForFamilies(familiesTried);
+  metrics.dsrMin = Number(threshold.toFixed(5));
+  if (familiesTried !== undefined) metrics.familiesTried = familiesTried;
+  return dsr >= threshold
     ? pass(metrics)
-    : fail(`DSR: ${dsr.toFixed(3)} < 0.95 при планке E[max]=${sr0.toFixed(3)} (N=${nEffective})`, metrics);
+    : fail(
+        `DSR: ${dsr.toFixed(3)} < ${threshold.toFixed(3)} при планке E[max]=${sr0.toFixed(3)} ` +
+          `(N=${nEffective}` +
+          (familiesTried === undefined ? "" : `, семейств ${familiesTried}`) +
+          ")",
+        metrics,
+      );
 }
 
 // ── Ворота 9 (частично): Уилсон против безубытка ────────────────────────────
