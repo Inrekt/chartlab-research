@@ -155,6 +155,23 @@ export interface ScheduledNullResult {
   meanDiff: number;
   pValue: number;
   reason?: string;
+  /**
+   * Диагностика калибровки. Не участвует в вердикте — существует потому, что
+   * по журналу обнаружилось невозможное: среди 1512 ОТВЕРГНУТЫХ кандидатов
+   * (то есть худшего хвоста) нет НИ ОДНОГО отрицательного t, хотя разностный
+   * тест обязан быть симметричным. Разделить причины — недобор реализованных
+   * сделок у базлайна, усреднение по K, объединение дней — можно только этими
+   * числами, а сейчас они не сохраняются нигде и теряются каждую ночь.
+   * Пре-регистрация: docs/null-model-calibration-preregistration.md.
+   */
+  diagnostics: {
+    candidateTrades: number;
+    /** Реализовано базлайном, усреднённо по K прогонам. */
+    nullTradesPerRun: number;
+    daysCandidateOnly: number;
+    daysNullOnly: number;
+    daysBoth: number;
+  };
 }
 
 /**
@@ -181,6 +198,11 @@ export function scheduledNullGate(
 
   // средний дневной ряд базлайна: сумма по прогонам / K
   const nullDailySum = new Map<number, number>();
+  // Диагностика калибровки: базлайну выдаётся столько же ВХОДОВ, сколько у
+  // кандидата, но реализуется меньше СДЕЛОК — случайные входы чаще попадают
+  // в уже открытую позицию, а незакрытые на конце окна выбрасываются. Замер
+  // на 83 парах дал −21.5%; здесь это считается на боевом пути.
+  let nullTradesTotal = 0;
   // Символ-мажорно: свечи одного символа читаются один раз на все K прогонов
   // базлайна. Обратный порядок заставлял бы держать в памяти весь корпус.
   for (const [symbol, symTrades] of tradesBySymbol) {
@@ -197,7 +219,9 @@ export function scheduledNullGate(
         minEntryTime,
       );
       if (entries.length === 0) continue;
-      for (const [day, r] of dailyNetSeries(simulateExits(candles, config, symbol, entries))) {
+      const baseline = simulateExits(candles, config, symbol, entries);
+      nullTradesTotal += baseline.length;
+      for (const [day, r] of dailyNetSeries(baseline)) {
         nullDailySum.set(day, (nullDailySum.get(day) ?? 0) + r);
       }
     }
@@ -208,10 +232,33 @@ export function scheduledNullGate(
   for (const day of days) {
     diffs.push((candidateDaily.get(day) ?? 0) - (nullDailySum.get(day) ?? 0) / SCHED_NULL_RUNS);
   }
+
+  // Дни, где торговала только одна сторона, входят в разность как «полный
+  // результат минус ноль». Их доля — второй подозреваемый в перекосе t, и без
+  // этих трёх чисел отделить его от недобора сделок нельзя.
+  let daysCandidateOnly = 0;
+  let daysNullOnly = 0;
+  let daysBoth = 0;
+  for (const day of days) {
+    const inCand = candidateDaily.has(day);
+    const inNull = nullDailySum.has(day);
+    if (inCand && inNull) daysBoth += 1;
+    else if (inCand) daysCandidateOnly += 1;
+    else daysNullOnly += 1;
+  }
+  const diagnostics = {
+    candidateTrades: allTrades.length,
+    nullTradesPerRun: Number((nullTradesTotal / SCHED_NULL_RUNS).toFixed(1)),
+    daysCandidateOnly,
+    daysNullOnly,
+    daysBoth,
+  };
+
   if (diffs.length < MIN_CLUSTER_DAYS) {
     return {
       pass: false, t: 0, days: diffs.length, meanDiff: 0, pValue: 1,
       reason: `нуль-модель: лишь ${diffs.length} дней < ${MIN_CLUSTER_DAYS}`,
+      diagnostics,
     };
   }
   const m = moments(diffs);
@@ -227,6 +274,7 @@ export function scheduledNullGate(
       t >= minT
         ? undefined
         : `нуль-модель: t=${t.toFixed(2)} < ${minT} над базлайном с тем же расписанием`,
+    diagnostics,
   };
 }
 

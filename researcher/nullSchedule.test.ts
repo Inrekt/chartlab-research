@@ -111,3 +111,41 @@ describe("scheduledNullGate", () => {
     expect(a).toEqual(b);
   });
 });
+
+describe("диагностика калибровки нуль-модели", () => {
+  test("числа заполняются и позволяют увидеть недобор сделок у базлайна", () => {
+    // Существует потому, что по журналу нашлось невозможное: среди 1512
+    // ОТВЕРГНУТЫХ кандидатов нет ни одного отрицательного t, хотя разностный
+    // тест обязан быть симметричным. Разделить причины без этих чисел нельзя,
+    // а раньше они не сохранялись нигде — `t` жил только в тексте причины
+    // отказа и у прошедших терялся вовсе.
+    const candles = flatCandles(24 * 200);
+    const config = {
+      id: "t", ownerId: "test", name: "t", direction: "long" as const,
+      timeframe: "1h" as const, symbols: [],
+      entry: { operator: "AND" as const, conditions: [] },
+      exit: {
+        stopLoss: { type: "percent" as const, value: 1 },
+        takeProfit: { type: "rr" as const, value: 2 },
+        maxBarsInTrade: 3,
+      },
+    };
+    const list: TradeResult[] = [];
+    for (let d = 0; d < 150; d++) {
+      const at = candles[0].time + d * 86_400 + 3600;
+      list.push(trade(at, at + 3 * 3600, 0));
+    }
+    const res = scheduledNullGate(new Map([["X", list]]), config, () => candles, 11);
+
+    expect(res.diagnostics.candidateTrades).toBe(150);
+    // Базлайну выдаётся столько же ВХОДОВ — реализованных сделок у него не
+    // может быть больше, а меньше вполне: случайные входы чаще попадают в уже
+    // открытую позицию, и незакрытые на конце окна выбрасываются.
+    expect(res.diagnostics.nullTradesPerRun).toBeGreaterThan(0);
+    expect(res.diagnostics.nullTradesPerRun).toBeLessThanOrEqual(150);
+    // Разбиение дней сходится с их общим числом — иначе третий подозреваемый
+    // (объединение дней) считается неверно.
+    const d = res.diagnostics;
+    expect(d.daysBoth + d.daysCandidateOnly + d.daysNullOnly).toBe(res.days);
+  });
+});

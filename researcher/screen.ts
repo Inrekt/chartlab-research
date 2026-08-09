@@ -602,6 +602,15 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
         days: result.days,
         meanDiff: result.meanDiff,
         gateVersion: GATE_VERSION,
+        // Диагностика калибровки — на вердикт не влияет. До неё `t` жил
+        // только в ТЕКСТЕ причины отказа, то есть у прошедших терялся вовсе,
+        // и проверить симметрию теста было не по чему. Именно так дефект
+        // «ни одного отрицательного t из 1512» прожил незамеченным.
+        candidateTrades: result.diagnostics.candidateTrades,
+        nullTradesPerRun: result.diagnostics.nullTradesPerRun,
+        daysCandidateOnly: result.diagnostics.daysCandidateOnly,
+        daysNullOnly: result.diagnostics.daysNullOnly,
+        daysBoth: result.diagnostics.daysBoth,
       },
     };
     f.pNull = result.pValue;
