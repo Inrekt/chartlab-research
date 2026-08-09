@@ -1,0 +1,33 @@
+name: Probe exchange reachability
+
+# Отвечает на один вопрос: пускает ли биржа раннер GitHub.
+#
+# Появился после того, как шаг сбора корпуса вернул `451 Unavailable For Legal
+# Reasons` с fapi.binance.com. 451 — это блокировка по юрисдикции, а не сбой
+# сети: она не лечится ретраями и не видна локально, где всё работает.
+#
+# Вопрос несущий, потому что от него зависит, может ли облако вообще вести
+# инкубацию: форвард-сделки берутся живыми барами с той же биржи. Если
+# раннер заблокирован, кандидат просидит 365 дней с нулём сделок и умрёт
+# «по календарю» — с виду честная смерть, на деле мёртвая инфраструктура.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping public endpoints
+        run: |
+          probe() {
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$2")
+            echo "$1: HTTP $code  ($2)"
+          }
+          probe "спот klines      " "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=1"
+          probe "перп klines      " "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=1"
+          probe "перп exchangeInfo" "https://fapi.binance.com/fapi/v1/exchangeInfo"
+          probe "bulk-зеркало     " "https://data.binance.vision/?prefix=data/futures/um/daily/"
+          echo ""
+          echo "451 = блокировка по юрисдикции (ретраи не помогут, локально не видна)."
+          echo "200 = путь открыт."
