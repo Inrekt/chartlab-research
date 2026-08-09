@@ -455,6 +455,7 @@ function closeTrade(symbol: string, open: OpenPosition, exitTime: number, exitPr
     stopPrice: open.stopPrice,
     targetPrice: open.targetPrice,
     rMultiple,
+    riskBudget: open.riskBudget,
     won: rMultiple > 0,
     barsHeld: open.barsHeld,
   };

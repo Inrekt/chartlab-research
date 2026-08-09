@@ -20,7 +20,7 @@ const flatCandles = (n: number, startSec = 1_700_000_000 - (1_700_000_000 % HOUR
 
 const trade = (entryTime: number, exitTime: number, r: number): TradeResult => ({
   symbol: "X", direction: "long", entryTime, entryPrice: 100, exitTime, exitPrice: 100,
-  stopPrice: 99, targetPrice: 102, rMultiple: r, won: r > 0, barsHeld: 1,
+  stopPrice: 99, targetPrice: 102, rMultiple: r, riskBudget: 1, won: r > 0, barsHeld: 1,
 });
 
 describe("scheduleProfile / sampleScheduledEntries", () => {

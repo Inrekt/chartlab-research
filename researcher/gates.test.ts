@@ -32,6 +32,7 @@ const trade = (entryTime: number, rMultiple: number): TradeResult => ({
   stopPrice: 98,
   targetPrice: 104,
   rMultiple,
+  riskBudget: 2,
   won: rMultiple > 0,
   barsHeld: 5,
 });
@@ -210,6 +211,7 @@ describe("огрызки лет не голосуют в воротах врем
       stopPrice: 98,
       targetPrice: 104,
       rMultiple: r,
+      riskBudget: 2,
       won: r > 0,
       barsHeld: 1,
     }) as TradeResult;

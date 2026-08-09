@@ -66,6 +66,22 @@ export function setActiveCosts(costs: CostAssumptions): () => void {
   };
 }
 
+/**
+ * Вернуть модель издержек к умолчанию, чем бы её ни подменили.
+ *
+ * Страховка на случай, когда `restoreCosts()` не был вызван: в `runScreen` он
+ * стоит ПОСЛЕ прогона и не в `finally`, поэтому исключение в любых воротах
+ * оставляет таблицу по ликвидности активной на весь процесс. Последствие
+ * молчаливое и дорогое: инкубатор и карточки строят псевдо-сделку без символа,
+ * поиск в таблице промахивается и подставляет консервативную ставку ×10 —
+ * каждой форвард-сделке, без единой записи в лог.
+ *
+ * Вызывается там, где прогон уже признан упавшим.
+ */
+export function resetActiveCosts(): void {
+  active = DEFAULT_COSTS;
+}
+
 export interface CostAdjustedResult {
   /** Cost of a round trip expressed in R — i.e. as a fraction of the risk taken. */
   costR: number;
@@ -84,7 +100,27 @@ export interface CostAdjustedResult {
  * to express it in the same units expectancy is measured in.
  */
 export function tradeCostInR(trade: TradeResult, costs: CostAssumptions = active): number {
-  const riskDistance = Math.abs(trade.entryPrice - trade.stopPrice);
+  /*
+   * Единица риска берётся из `riskBudget`, а НЕ из |entryPrice − stopPrice|.
+   *
+   * `stopPrice` в отчёте — стоп ТЕКУЩИЙ, и он мутирует: перенос в безубыток
+   * приравнивает его к средней цене входа. Разность становилась ровно нулём
+   * (точно, не приблизительно: доли — степени двойки), и издержки обнулялись у
+   * КАЖДОЙ сделки, дошедшей до частичного тейка. Замер: 35.2% сделок семейств
+   * с сопровождением получали нулевые издержки, средняя издержка падала вдвое
+   * (0.0086R против 0.0181R у того же семейства без сопровождения). Ошибка
+   * была В ПОЛЬЗУ стратегии и текла во всю воронку — халвинги, ворота ширины,
+   * стресс издержек (удвоение нуля есть ноль), нуль-модель, DSR, Уилсон, OOT
+   * и решение SPRT о выпуске.
+   *
+   * `riskBudget` — та же величина, которой движок считает сам R-множитель,
+   * поэтому издержки и результат теперь меряются одной линейкой.
+   * Запасной путь по старой формуле оставлен для отчётов, записанных до
+   * появления поля.
+   */
+  const riskDistance = Number.isFinite(trade.riskBudget)
+    ? Math.abs(trade.riskBudget)
+    : Math.abs(trade.entryPrice - trade.stopPrice);
   if (!Number.isFinite(riskDistance) || riskDistance <= 0) return 0;
   const slippage = costs.slippageFor?.(trade) ?? costs.slippageRate;
   const roundTripRate = 2 * (costs.feeRate + slippage);

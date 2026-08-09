@@ -71,6 +71,7 @@ describe("экономика испытания", () => {
     stopPrice: 99, // риск 1 → издержки в R измеримы
     targetPrice: 103,
     rMultiple: r,
+    riskBudget: 1,
     won: r > 0,
     barsHeld: 1,
   });

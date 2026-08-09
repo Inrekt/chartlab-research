@@ -20,6 +20,7 @@ const trade = (dayIdx: number, rMultiple: number): TradeResult => ({
   stopPrice: 98,
   targetPrice: 102,
   rMultiple,
+  riskBudget: 2,
   won: rMultiple > 0,
   barsHeld: 3,
 });

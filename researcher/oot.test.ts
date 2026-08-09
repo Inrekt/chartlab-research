@@ -139,7 +139,7 @@ describe("порог теста параметризован", () => {
         return {
           symbol: "X", direction: "long" as const, entryTime: t0, entryPrice: 100,
           exitTime: t0 + HOUR, exitPrice: 100, stopPrice: 99, targetPrice: 102,
-          rMultiple: 0.12, won: true, barsHeld: 1,
+          rMultiple: 0.12, riskBudget: 1, won: true, barsHeld: 1,
         };
       })],
     ]);

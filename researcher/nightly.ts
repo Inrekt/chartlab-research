@@ -21,6 +21,7 @@ import { runScreen, type ScreenSummary } from "./screen.ts";
 import { writeStatus } from "./statusFile.ts";
 import { runSupervision, type SupervisionSummary } from "./supervise.ts";
 import { TrialLedger, STATES } from "./ledger.ts";
+import { resetActiveCosts } from "../src/core/committee/costModel.ts";
 import { DatabaseSync } from "node:sqlite";
 import { calibrateGates } from "./gate-calibration.ts";
 
@@ -324,6 +325,12 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   await main().catch((error: unknown) => {
     const reason = error instanceof Error ? error.message : String(error);
     console.error(reason);
+    // Модель издержек возвращается к умолчанию ПЕРВЫМ делом: `restoreCosts()`
+    // в runScreen стоит после прогона и не в finally, поэтому упавшая ночь
+    // оставляет активной таблицу по ликвидности. Дальше по коду строится
+    // статус, а в нём — метрики; считать их чужой моделью значит записать в
+    // журнал числа, которых не было ни в одном прогоне.
+    resetActiveCosts();
     try {
       writeStatus({
         screens: [],

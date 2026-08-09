@@ -114,6 +114,7 @@ export function syntheticTrades(opts: SyntheticOpts): TradeResult[] {
       stopPrice: STOP_PRICE,
       targetPrice: ENTRY_PRICE * 1.04,
       rMultiple: gross,
+      riskBudget: Math.abs(ENTRY_PRICE - STOP_PRICE),
       won: gross > 0,
       barsHeld: 8,
     });
