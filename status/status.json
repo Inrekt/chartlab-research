@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-09T21:43:07.433Z",
+  "generatedAt": "2026-08-09T22:02:44.782Z",
   "run": {
     "durationMin": 1,
     "nextNightUtc": "2026-08-10T21:37:00.000Z",
-    "lastTickUtc": "2026-08-09T21:43:07.433Z"
+    "lastTickUtc": "2026-08-09T22:02:44.782Z"
   },
   "ledger": {
     "trials": 56806,
@@ -36,12 +36,12 @@
     ],
     "corpus": {
       "newestBar": "2026-08-08T23:00:00.000Z",
-      "ageDays": 0.95,
+      "ageDays": 0.96,
       "laggingSymbols": 3,
       "level": "ok"
     }
   },
-  "failure": null,
+  "failure": "Пространство гипотез исчерпано: не набрано НИ ОДНОГО кандидата из 2000 запрошенных.",
   "silence": {
     "level": "ok",
     "hoursSince": 3.9348513888888887,
