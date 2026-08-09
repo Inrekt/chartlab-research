@@ -24,7 +24,14 @@ import { pathToFileURL } from "node:url";
 import { DB_PATH } from "./paths.ts";
 import type { TradeResult } from "../src/core/types/index.ts";
 import { runBacktest } from "../src/core/backtest/engine.ts";
-import { averageCostInR, statsAfterCosts, tradeCostInR } from "../src/core/committee/costModel.ts";
+import {
+  averageCostInR,
+  DEFAULT_COSTS,
+  setActiveCosts,
+  statsAfterCosts,
+  tradeCostInR,
+} from "../src/core/committee/costModel.ts";
+import { buildSlippageTable } from "./liquidityCosts.ts";
 import {
   candidateId,
   EXITS,
@@ -277,6 +284,27 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
    * стадии-128» внутри каждого среза.
    */
   const tiers = liquidityTiers(opts.tf, universe);
+
+  /**
+   * Издержки по ЛИКВИДНОСТИ символа в момент сделки — на весь прогон.
+   *
+   * Ставится один раз здесь, а не протаскивается параметром: издержки
+   * считаются в двенадцати местах воронки, и забытое место означало бы, что
+   * половина отбора идёт по одной модели, а половина по другой. Такое
+   * рассогласование не роняет тесты и ничего не пишет в лог.
+   *
+   * Модель применяется только ВВЕРХ (пол на текущих 5 б.п.), поэтому правка
+   * строго ужесточает. Пре-регистрация: docs/liquidity-costs-preregistration.md.
+   */
+  const slippage = buildSlippageTable(opts.tf, universe, (symbol) =>
+    loadCandlesWindow(symbol, opts.tf, "in"),
+  );
+  const restoreCosts = setActiveCosts({
+    feeRate: DEFAULT_COSTS.feeRate,
+    slippageRate: DEFAULT_COSTS.slippageRate,
+    slippageFor: slippage.slippageFor,
+  });
+  log(`издержки: по ликвидности, покрыто символов ${slippage.symbols} из ${universe.length}`);
   const poolOf = (list: readonly string[], tier: LiquidityTier | undefined): string[] =>
     tier ? list.filter((symbol) => tiers.get(symbol) === tier) : [...list];
   /**
@@ -720,6 +748,9 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     diagnostics,
   };
   ledger.close();
+  // Модель издержек — состояние прогона, а не процесса: не вернуть её значит
+  // оставить следующему вызывающему (тесту, утилите) таблицу чужой вселенной.
+  restoreCosts();
   return summary;
 }
 

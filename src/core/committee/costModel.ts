@@ -23,12 +23,48 @@ export const DEFAULT_SLIPPAGE_RATE = 0.0005;
 export interface CostAssumptions {
   feeRate: number;
   slippageRate: number;
+  /**
+   * Проскальзывание для КОНКРЕТНОЙ сделки, если оно известно точнее плоской
+   * ставки. Задано — используется оно, иначе `slippageRate`.
+   *
+   * Существует потому, что одна ставка на нашу вселенную не может быть верной
+   * нигде, кроме одной точки: оборот символов различается в 3270 раз (BTC
+   * 88.4 млн $/час против 27 тыс. у хвоста). Плоские 5 б.п. вчетверо
+   * пессимистичны на BTC и в 8.8 раза оптимистичны на девятом дециле.
+   * Пре-регистрация: researcher/docs/liquidity-costs-preregistration.md.
+   */
+  slippageFor?: (trade: TradeResult) => number;
 }
 
 export const DEFAULT_COSTS: CostAssumptions = {
   feeRate: DEFAULT_FEE_RATE,
   slippageRate: DEFAULT_SLIPPAGE_RATE,
 };
+
+/**
+ * Действующая модель издержек прогона.
+ *
+ * Модуль-уровневая изменяемая переменная — сознательный выбор, а не лень.
+ * Издержки считаются в ДВЕНАДЦАТИ местах воронки; протаскивание параметра
+ * через все означало бы, что однажды одно из них забудут, и половина отбора
+ * поедет на одной модели, а половина на другой. Такое рассогласование не
+ * роняет тесты и не пишет в лог ничего — то есть относится к главному классу
+ * ошибок этого проекта. Единая точка делает его невозможным по построению.
+ */
+let active: CostAssumptions = DEFAULT_COSTS;
+
+export function activeCosts(): CostAssumptions {
+  return active;
+}
+
+/** Установить модель на прогон. Возвращает функцию отката — для тестов. */
+export function setActiveCosts(costs: CostAssumptions): () => void {
+  const previous = active;
+  active = costs;
+  return () => {
+    active = previous;
+  };
+}
 
 export interface CostAdjustedResult {
   /** Cost of a round trip expressed in R — i.e. as a fraction of the risk taken. */
@@ -47,10 +83,11 @@ export interface CostAdjustedResult {
  * both entry and exit, so `2 * rate * entryPrice`, divided by the risk distance
  * to express it in the same units expectancy is measured in.
  */
-export function tradeCostInR(trade: TradeResult, costs: CostAssumptions = DEFAULT_COSTS): number {
+export function tradeCostInR(trade: TradeResult, costs: CostAssumptions = active): number {
   const riskDistance = Math.abs(trade.entryPrice - trade.stopPrice);
   if (!Number.isFinite(riskDistance) || riskDistance <= 0) return 0;
-  const roundTripRate = 2 * (costs.feeRate + costs.slippageRate);
+  const slippage = costs.slippageFor?.(trade) ?? costs.slippageRate;
+  const roundTripRate = 2 * (costs.feeRate + slippage);
   return (roundTripRate * trade.entryPrice) / riskDistance;
 }
 
@@ -62,7 +99,7 @@ export function tradeCostInR(trade: TradeResult, costs: CostAssumptions = DEFAUL
  * setup look CHEAPER the more unmeasurable trades it contains — costs are a
  * veto input, so that would turn a data problem into a free pass.
  */
-export function averageCostInR(trades: TradeResult[], costs: CostAssumptions = DEFAULT_COSTS): number {
+export function averageCostInR(trades: TradeResult[], costs: CostAssumptions = active): number {
   let sum = 0;
   let measurable = 0;
   for (const trade of trades) {
@@ -77,7 +114,7 @@ export function averageCostInR(trades: TradeResult[], costs: CostAssumptions = D
 export function applyCosts(
   trades: TradeResult[],
   stats: BacktestStats,
-  costs: CostAssumptions = DEFAULT_COSTS,
+  costs: CostAssumptions = active,
 ): CostAdjustedResult {
   const costR = averageCostInR(trades, costs);
   const grossExpectancy = stats.expectancy;
@@ -96,7 +133,7 @@ export function applyCosts(
  * but gives an honest profit factor and win rate too — a trade that cleared its
  * target by less than the cost was not actually a winner.
  */
-export function statsAfterCosts(trades: TradeResult[], costs: CostAssumptions = DEFAULT_COSTS): BacktestStats {
+export function statsAfterCosts(trades: TradeResult[], costs: CostAssumptions = active): BacktestStats {
   const adjusted = trades.map((trade) => {
     const net = trade.rMultiple - tradeCostInR(trade, costs);
     return { ...trade, rMultiple: net, won: net > 0 };

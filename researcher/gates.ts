@@ -8,6 +8,7 @@
  */
 import type { BacktestStats, TradeResult } from "../src/core/types/index.ts";
 import {
+  activeCosts,
   statsAfterCosts,
   tradeCostInR,
   DEFAULT_COSTS,
@@ -89,13 +90,30 @@ export function gateBreadth(
 }
 
 // ── Ворота 3: стресс издержек ×2 ────────────────────────────────────────────
+/**
+ * Стресс выводится из ДЕЙСТВУЮЩЕЙ модели, а не из плоской.
+ *
+ * Если базовый расчёт идёт по ликвидности символа, а стресс — по плоской
+ * ставке, то на неликвидной половине «удвоенные издержки» окажутся ДЕШЕВЛЕ
+ * обычных, и ворота начнут пропускать именно тех, кого обязаны резать. Такое
+ * рассогласование не роняет тесты и ничего не пишет в лог.
+ */
+export function stressedCosts(base: CostAssumptions = activeCosts()): CostAssumptions {
+  return {
+    feeRate: base.feeRate * 2,
+    slippageRate: base.slippageRate * 2,
+    slippageFor: base.slippageFor ? (t) => base.slippageFor!(t) * 2 : undefined,
+  };
+}
+
+/** Обратная совместимость: плоский стресс, когда модель по умолчанию. */
 export const STRESSED_COSTS: CostAssumptions = {
   feeRate: DEFAULT_COSTS.feeRate * 2,
   slippageRate: DEFAULT_COSTS.slippageRate * 2,
 };
 
 export function gateCostStress(allTrades: readonly TradeResult[]): GateResult {
-  const stressed = statsAfterCosts([...allTrades], STRESSED_COSTS);
+  const stressed = statsAfterCosts([...allTrades], stressedCosts());
   const metrics = { stressedExpectancy: Number(stressed.expectancy.toFixed(4)) };
   return stressed.expectancy > 0
     ? pass(metrics)
