@@ -52,8 +52,8 @@ jobs:
       # каждом обновлении и растило репозиторий на ~100 МБ за раз, ничего не
       # выигрывая. Ключ с датой — раз в сутки кэш обновляется, restore-keys
       # подхватывает вчерашний, и сборщику остаётся дописать только хвост.
-      - name: Cache candle corpus
-        uses: actions/cache@v4
+      - name: Restore candle corpus
+        uses: actions/cache/restore@v4
         with:
           path: corpus
           key: corpus-perp-${{ github.run_id }}
@@ -68,6 +68,19 @@ jobs:
         env:
           RESEARCHER_HISTORY_DIR: ${{ github.workspace }}/corpus
         run: npx tsx researcher/collect-candles.ts --source perp --tf 1h,4h --out corpus
+
+      # Сохранение ОТДЕЛЬНЫМ шагом с if: always() — иначе тупик, в который мы
+      # уже попали. `actions/cache` пишет кэш пост-шагом и ТОЛЬКО при успехе
+      # джоба; ночь падает на исчерпанном пространстве гипотез → кэш не
+      # сохраняется → следующая ночь снова качает всё заново, а часовой тик,
+      # видя пустой каталог, берёт живые бары со СПОТА, пока скрин считает по
+      # перпам. Ровно то расхождение, ради которого корпус и переезжал.
+      - name: Save candle corpus
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: corpus
+          key: corpus-perp-${{ github.run_id }}
 
       - name: Run the night (both universes)
         env:
