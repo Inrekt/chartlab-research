@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-09T05:53:55.742Z",
+  "generatedAt": "2026-08-09T07:11:19.736Z",
   "run": {
     "durationMin": 0,
     "nextNightUtc": "2026-08-09T21:37:00.000Z",
-    "lastTickUtc": "2026-08-09T05:53:55.742Z"
+    "lastTickUtc": "2026-08-09T07:11:19.736Z"
   },
   "ledger": {
     "trials": 56374,
@@ -29,19 +29,19 @@
       },
       {
         "name": "корпус свечей",
-        "files": 0,
+        "files": 246,
         "required": 100,
-        "ok": false
+        "ok": true
       }
     ],
     "corpus": {
-      "newestBar": null,
-      "ageDays": null,
-      "laggingSymbols": 0,
-      "level": "unknown"
+      "newestBar": "2026-08-07T23:00:00.000Z",
+      "ageDays": 1.34,
+      "laggingSymbols": 7,
+      "level": "ok"
     }
   },
-  "failure": "Предполётная проверка: источники данных недоступны.",
+  "failure": "Пространство гипотез исчерпано: набрано 0 из 2000 запрошенных.",
   "universes": [
     {
       "tf": "1h",
