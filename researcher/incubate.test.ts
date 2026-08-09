@@ -5,7 +5,15 @@ import { beforeEach, describe, expect, test } from "vitest";
 import type { Candle, TradeResult } from "../src/core/types/index.ts";
 import { cardFileName } from "./cards.ts";
 import type { CandidateSpec } from "./grammar.ts";
-import { ENTRY_GATE_DELTA, MAX_INCUBATION_DAYS, MIN_GRADUATION_TRADES, runIncubation } from "./incubate.ts";
+import {
+  catchUpTrades,
+  ENTRY_GATE_DELTA,
+  MAX_INCUBATION_DAYS,
+  MIN_GRADUATION_TRADES,
+  runIncubation,
+  type CandleSource,
+} from "./incubate.ts";
+import { ExchangeBlockedError } from "./binance.ts";
 import { IncubationBook } from "./incubationBook.ts";
 import { TrialLedger } from "./ledger.ts";
 import {
@@ -477,6 +485,74 @@ describe("incubation book invariants", () => {
     const raw = (book as unknown as { db: import("node:sqlite").DatabaseSync }).db;
     expect(() => raw.exec("UPDATE paper_trades SET r_multiple = 99")).toThrow(/append-only/);
     expect(() => raw.exec("DELETE FROM paper_trades")).toThrow(/append-only/);
+    book.close();
+  });
+});
+
+describe("отказ источника не выглядит как отсутствие края", () => {
+  test("блокировка по юрисдикции роняет догонку, а не откладывает её", async () => {
+    // 451 Unavailable For Legal Reasons: Binance закрывает доступ раннерам
+    // GitHub (проверено зондом — 451 и на споте, и на перпах). Это НЕ сетевой
+    // сбой: «догоним в следующий раз» повторялось бы каждый час, пока
+    // кандидат не умрёт по календарю через 365 дней, и в журнал это записалось
+    // бы как «не доказал край» — вывод о рынке вместо мёртвой инфраструктуры.
+    const book = new IncubationBook(":memory:");
+    const blocked: CandleSource = () => {
+      throw new ExchangeBlockedError("451 — доступ закрыт по юрисдикции");
+    };
+    await expect(
+      catchUpTrades(
+        book,
+        "cand-1",
+        SPEC,
+        { tf: "1h", symbols: ["BTCUSDT", "ETHUSDT"], frozenAt: 1_700_000_000 },
+        blocked,
+        () => 1_800_000_000,
+        () => {},
+      ),
+    ).rejects.toThrow(/юрисдикц/);
+    book.close();
+  });
+
+  test("падение ВСЕХ символов — тоже отказ источника, какой бы ни была причина", async () => {
+    // Предохранитель шире, чем один код ответа: причину следующего отказа мы
+    // предсказать не можем, а признак «не ответил никто» универсален.
+    const book = new IncubationBook(":memory:");
+    const dead: CandleSource = () => {
+      throw new Error("ECONNRESET");
+    };
+    await expect(
+      catchUpTrades(
+        book,
+        "cand-2",
+        SPEC,
+        { tf: "1h", symbols: ["A", "B", "C"], frozenAt: 1_700_000_000 },
+        dead,
+        () => 1_800_000_000,
+        () => {},
+      ),
+    ).rejects.toThrow(/недоступен по ВСЕМ 3 символам/);
+    book.close();
+  });
+
+  test("отказ ЧАСТИ символов по-прежнему прощается", async () => {
+    // Дыра у одной монеты — нормальная жизнь, ронять из-за неё нельзя.
+    const book = new IncubationBook(":memory:");
+    const flaky: CandleSource = (symbol) => {
+      if (symbol === "BAD") throw new Error("404");
+      return Promise.resolve([]);
+    };
+    await expect(
+      catchUpTrades(
+        book,
+        "cand-3",
+        SPEC,
+        { tf: "1h", symbols: ["BAD", "GOOD"], frozenAt: 1_700_000_000 },
+        flaky,
+        () => 1_800_000_000,
+        () => {},
+      ),
+    ).resolves.toBe(0);
     book.close();
   });
 });

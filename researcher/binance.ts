@@ -20,6 +20,18 @@ import type { Candle } from "../src/core/types/index.ts";
 import { HISTORY_DIR } from "./corpus.ts";
 import type { SignalTf } from "./grammar.ts";
 
+/**
+ * Постоянная недоступность биржи, а не временный сбой.
+ *
+ * Отдельный тип нужен ровно затем, чтобы догонка инкубатора могла отличить
+ * «сеть моргнула, догоним через час» от «отсюда биржа недоступна никогда».
+ * Первое проглатывать правильно, второе — смертельно: кандидат тихо
+ * просиживает календарный лимит и умирает как не доказавший край.
+ */
+export class ExchangeBlockedError extends Error {
+  readonly permanent = true;
+}
+
 export const TF_SECONDS: Record<SignalTf, number> = {
   "1h": 3600,
   "4h": 14_400,
@@ -102,6 +114,23 @@ export async function fetchBinanceKlines(
   for (let page = 0; page < MAX_PAGES; page++) {
     const url = `${baseUrl()}?symbol=${symbol}&interval=${tf}&startTime=${startMs}&limit=${PAGE_LIMIT}`;
     const res = await fetchWithRetry(url);
+    if (res.status === 451 || res.status === 403) {
+      throw new ExchangeBlockedError(
+        [
+          `Биржа отвечает ${res.status} — доступ закрыт по юрисдикции, а не сбой сети.`,
+          `Проверено зондом (.github/workflows/probe.yml): раннеры GitHub получают 451`,
+          `и на api.binance.com, и на fapi.binance.com. Открыто только bulk-зеркало`,
+          `data.binance.vision.`,
+          "",
+          "Это НЕ временная неудача, и ретраи её не лечат. Инкубатор в такой среде",
+          "не наберёт ни одной форвард-сделки, а кандидат умрёт «по календарю» через",
+          "365 дней — с виду честная смерть, на деле мёртвая инфраструктура.",
+          "",
+          "Чинить: перенести прогон туда, откуда биржа доступна (свой сервер), либо",
+          "перевести источник живых баров на bulk-зеркало ценой суточного лага.",
+        ].join("\n"),
+      );
+    }
     if (!res.ok) throw new Error(`Binance ${res.status} для ${symbol} ${tf}`);
     const rows = (await res.json()) as [number, string, string, string, string, string, number][];
     if (rows.length === 0) break;

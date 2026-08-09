@@ -21,7 +21,7 @@ import { DB_PATH } from "./paths.ts";
 import { runBacktest } from "../src/core/backtest/engine.ts";
 import { tradeCostInR } from "../src/core/committee/costModel.ts";
 import { toStrategyConfig, type SignalTf } from "./grammar.ts";
-import { fetchBinanceKlines, TF_SECONDS } from "./binance.ts";
+import { ExchangeBlockedError, fetchBinanceKlines, TF_SECONDS } from "./binance.ts";
 import { buildCard, DEFAULT_VAULT_CARDS_DIR, writeCard } from "./cards.ts";
 import { IncubationBook, type PaperTradeRow } from "./incubationBook.ts";
 import { TrialLedger } from "./ledger.ts";
@@ -84,6 +84,7 @@ export async function catchUpTrades(
   const config = toStrategyConfig(spec);
   const tfSec = TF_SECONDS[inc.tf];
   let inserted = 0;
+  let failed = 0;
   for (const symbol of inc.symbols) {
     const cursor = book.cursor(candidateId, symbol) ?? inc.frozenAt;
     const startSec = cursor - WARMUP_BARS * tfSec;
@@ -91,6 +92,11 @@ export async function catchUpTrades(
     try {
       candles = await source(symbol, inc.tf, startSec);
     } catch (error) {
+      // Постоянная недоступность (451/403 — блокировка по юрисдикции) НЕ
+      // проглатывается: «догоним в следующий раз» здесь было бы ложью, и
+      // повторялось бы каждый час, пока кандидат не умрёт по календарю.
+      if (error instanceof ExchangeBlockedError) throw error;
+      failed += 1;
       log(`  ${symbol}: источник свечей упал (${String(error)}) — догоним в следующий раз`);
       continue;
     }
@@ -99,6 +105,18 @@ export async function catchUpTrades(
     const trades = runBacktest(closed, config, symbol).filter((t) => t.entryTime > inc.frozenAt);
     inserted += book.recordTrades(candidateId, trades);
     book.setCursor(candidateId, symbol, closed[closed.length - 1].time);
+  }
+
+  // Упали ВСЕ символы — это не дыра в данных отдельной монеты, это мёртвый
+  // источник, какой бы ни была причина. Молча вернуть ноль значит записать
+  // «кандидат не наторговал» вместо «мы не смогли спросить», а через 365 дней
+  // это станет вердиктом о крае.
+  if (inc.symbols.length > 0 && failed === inc.symbols.length) {
+    throw new Error(
+      `Источник свечей недоступен по ВСЕМ ${failed} символам инкубации ${candidateId}. ` +
+        "Это отказ источника, а не отсутствие сделок: продолжать значит копить " +
+        "календарь молчания и списать его потом на отсутствие края.",
+    );
   }
   return inserted;
 }
