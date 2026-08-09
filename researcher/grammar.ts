@@ -691,12 +691,96 @@ const RANGE_SWEEP_SETUPS: readonly SetupDef[] = RANGE_SWEEP_BARS.map((bars) => {
   } satisfies SetupDef;
 });
 
+/*
+ * ── Свип границы боковика, версия 2 ──────────────────────────────────────────
+ *
+ * Отдельное семейство, а не правка первого: 108 испытаний v1 лежат в журнале
+ * со своим вердиктом, и переиспользовать имя значило бы смешать два разных
+ * правила в одной родословной — а родословная теперь определяет планку
+ * дефляции.
+ *
+ * Что изменено против v1 и почему (пре-регистрация family-range-sweep-v2):
+ *
+ * 1. УБРАНО требование, чтобы скопление ликвидности с противоположной стороны
+ *    уже существовало в момент выноса. Оно сужало семейство в 8 раз (0.12
+ *    против 0.99 сделки на монету в год) и неверно по существу: владелец
+ *    входит на выносе, а рынок идёт собирать ликвидность ПОСЛЕ. Это было
+ *    следствие механизма, превращённое во входное условие, — заодно
+ *    подглядывание в будущее на уровне замысла. Кластер остаётся способом
+ *    ВЫХОДА, где ему и место.
+ *
+ * 2. ЗАЖАТОСТЬ стала ОСЬЮ сетки, а не константой. «Боковик» по описанию
+ *    двусторонен, но двусторонность — половина сужения. Честный выход не
+ *    угадывать, а объявить обе точки ДО прогона и заплатить бюджетом проб.
+ */
+const RANGE_SWEEP2_SIDES = ["swept", "both"] as const;
+type RangeSweep2Side = (typeof RANGE_SWEEP2_SIDES)[number];
+
+/** Сопровождение сделки: половина на 0.5R, стоп в безубыток. */
+export const RANGE_SWEEP2_SCALE_OUT = { atR: 0.5, fraction: 0.5, toBreakeven: true } as const;
+
+const rangeSweep2Id = (bars: number, side: RangeSweep2Side) => `rangesweep2_b${bars}_${side}`;
+const RANGE_SWEEP2_PARAMS = new Map<string, { bars: number; side: RangeSweep2Side }>();
+
+const RANGE_SWEEP2_SETUPS: readonly SetupDef[] = RANGE_SWEEP_BARS.flatMap((bars) =>
+  RANGE_SWEEP2_SIDES.map((side): SetupDef => {
+    const id = rangeSweep2Id(bars, side);
+    RANGE_SWEEP2_PARAMS.set(id, { bars, side });
+    return {
+      id,
+      family: "range_sweep_v2",
+      whoPays:
+        "стопы шортов, стоявшие над границей боковика: их принудительное закрытие и есть топливо выноса, " +
+        "и когда кластер выбран, покупателей по этим ценам не остаётся; плюс плечевой покупатель пробоя, " +
+        "вошедший в уже снятую ликвидность — над ним пусто, и он становится вынужденным продавцом " +
+        "(механизм подтверждён владельцем, пре-регистрация family-range-sweep-v2)",
+      fixedRule: true,
+      // Тот же приор, что у v1: гипотеза принесена владельцем с собственным
+      // торговым опытом. Не выше — опыт не доказательство, и первая версия
+      // правила края не показала.
+      prior: 3,
+      build: (dir: Direction): ConditionAtom[] => {
+        const short = dir === "short";
+        const swept = short ? "upper" : "lower";
+        const opposite = short ? "lower" : "upper";
+        const atoms: ConditionAtom[] = [
+          // Граница не обновлялась: верх последних `bars` баров не выше верха
+          // предыдущего такого же окна. Сдвиг 1 исключает сам бар выноса.
+          {
+            kind: "comparison",
+            left: { kind: "donchian", period: bars, line: swept, shift: 1 },
+            op: short ? "<=" : ">=",
+            right: { kind: "donchian", period: bars, line: swept, shift: 1 + bars },
+          },
+        ];
+        if (side === "both") {
+          atoms.push({
+            kind: "comparison",
+            left: { kind: "donchian", period: bars, line: opposite, shift: 1 },
+            op: short ? ">=" : "<=",
+            right: { kind: "donchian", period: bars, line: opposite, shift: 1 + bars },
+          });
+        }
+        // Вынос: цена вышла за границу боковика.
+        atoms.push({
+          kind: "comparison",
+          left: { kind: "close" },
+          op: short ? ">" : "<",
+          right: { kind: "donchian", period: bars, line: swept, shift: 1 },
+        });
+        return atoms;
+      },
+    };
+  }),
+);
+
 export const SETUPS: readonly SetupDef[] = [
   ...BASE_SETUPS,
   ...LIQUIDITY_SETUPS,
   ...FUNDING_SETUPS,
   ...FUNDING_PRESSURE_SETUPS,
   ...RANGE_SWEEP_SETUPS,
+  ...RANGE_SWEEP2_SETUPS,
 ];
 
 /**
@@ -716,6 +800,18 @@ export function setupNeighbors(setupId: string): string[] {
       .map((d) => RANGE_SWEEP_BARS[i + d])
       .filter((v): v is (typeof RANGE_SWEEP_BARS)[number] => v !== undefined)
       .map((v) => `rangesweep_b${v}`);
+  }
+
+  // Соседи v2 — по той же единственной варьируемой оси (длина окна), внутри
+  // своего режима зажатости: плато обязано мерить устойчивость ПРАВИЛА, а не
+  // прыжок между двумя разными определениями боковика.
+  const rs2 = RANGE_SWEEP2_PARAMS.get(setupId);
+  if (rs2) {
+    const i = RANGE_SWEEP_BARS.indexOf(rs2.bars as (typeof RANGE_SWEEP_BARS)[number]);
+    return [-1, 1]
+      .map((d) => RANGE_SWEEP_BARS[i + d])
+      .filter((v): v is (typeof RANGE_SWEEP_BARS)[number] => v !== undefined)
+      .map((v) => rangeSweep2Id(v, rs2.side));
   }
 
   const fund = FUND_PARAMS.get(setupId);
@@ -761,7 +857,8 @@ export function setupNeighbors(setupId: string): string[] {
 export function exitsFor(setupId: string): readonly ExitSpec[] {
   // Свип боковика выходит ПО ЛИКВИДНОСТИ, как и магнит: цель — столб, а не
   // фиксированное R. Общий пул выходов здесь не подошёл бы по смыслу.
-  if (LIQ_PARAMS.has(setupId) || RANGE_SWEEP_PARAMS.has(setupId)) return LIQUIDITY_EXITS;
+  if (LIQ_PARAMS.has(setupId) || RANGE_SWEEP_PARAMS.has(setupId) || RANGE_SWEEP2_PARAMS.has(setupId))
+    return LIQUIDITY_EXITS;
   const own = SETUPS.find((s) => s.id === setupId)?.exits;
   return own ?? EXITS;
 }
@@ -1135,6 +1232,11 @@ export function toStrategyConfig(spec: CandidateSpec): StrategyConfig {
             takeProfit: { type: "rr" as const, value: spec.exit.takeR },
           }),
       maxBarsInTrade: spec.exit.maxBars,
+      // Сопровождение — свойство СЕМЕЙСТВА, а не ось сетки: разведочный замер
+      // показал, что результат к уровню частичного тейка нечувствителен
+      // (0.3/0.5/1.0R близки), и тратить на него бюджет проб значило бы
+      // поднять планку всему семейству ни за что.
+      ...(RANGE_SWEEP2_PARAMS.has(spec.setup) ? { scaleOut: RANGE_SWEEP2_SCALE_OUT } : {}),
     },
     filters,
   };
