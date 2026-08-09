@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { deflateRawSync } from "node:zlib";
-import { parseKlineCsv, unzipSingleEntry } from "./collect-candles.ts";
+import { committedUniverse, parseKlineCsv, unzipSingleEntry } from "./collect-candles.ts";
 
 /** Минимальный корректный zip с одним файлом — как их отдаёт архив Binance. */
 function makeZip(name: string, content: string, method: 0 | 8 = 8): Buffer {
@@ -82,5 +82,20 @@ describe("разбор CSV свечей", () => {
 
   test("нулевая цена в архиве отбрасывается", () => {
     expect(parseKlineCsv("1577750400000,0,0,0,0,0")).toHaveLength(0);
+  });
+});
+
+describe("вселенная холодного старта", () => {
+  test("список зафиксирован в git и не пуст", () => {
+    // В архиве 832 символа — всё, что когда-либо торговалось. В живом корпусе
+    // 162. Без явного списка первая же ночь на пустом кэше ушла бы в закачку
+    // впятеро большего объёма и не уложилась бы в лимит джоба.
+    const syms = committedUniverse();
+    expect(syms.length).toBeGreaterThan(100);
+    expect(syms.length).toBeLessThan(400);
+    expect(syms.every((s) => s.endsWith("USDT"))).toBe(true);
+    expect(syms).toContain("BTCUSDT");
+    // Отсортирован — иначе диффы файла становятся нечитаемыми при обновлении.
+    expect([...syms].sort()).toEqual(syms);
   });
 });

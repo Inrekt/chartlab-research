@@ -33,8 +33,8 @@
  * Полный пересбор — флагом --full.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
 import type { Candle } from "../src/core/types/index.ts";
 import type { SignalTf } from "./grammar.ts";
@@ -174,6 +174,23 @@ const PERP_ALIASES: Record<string, string> = {
   FLOKIUSDT: "1000FLOKIUSDT",
   LUNCUSDT: "1000LUNCUSDT",
 };
+
+/**
+ * Список вселенной, зафиксированный в git.
+ *
+ * Нужен ровно для холодного старта: в архиве 832 символа (всё, что когда-либо
+ * торговалось), в живом корпусе — 162. Без явного списка первая же ночь на
+ * пустом кэше ушла бы в закачку впятеро большего объёма и не уложилась в
+ * лимит джоба. Файл — метаданные, а не данные: несколько килобайт имён.
+ */
+export function committedUniverse(): string[] {
+  try {
+    const path = join(dirname(fileURLToPath(import.meta.url)), "universe-perp.json");
+    return JSON.parse(readFileSync(path, "utf8")) as string[];
+  } catch {
+    return [];
+  }
+}
 
 // ── Архив Binance: разбор ZIP без зависимостей ──────────────────────────────
 //
@@ -443,6 +460,41 @@ async function main(): Promise<void> {
   mkdirSync(outDir, { recursive: true });
 
   let symbols = only ?? (await fetchUniverse(source));
+
+  /**
+   * Дозапись НЕ расширяет вселенную сама.
+   *
+   * Листинг архива отдаёт все символы, у которых КОГДА-ЛИБО были данные, —
+   * это сотни против 162 живых перпов у REST. Для разовой первичной сборки
+   * это плюс (лечится ошибка выжившего), для ночной дозаписи — ловушка:
+   * каждая ночь тратила бы часы на закачку истории символов, которых в
+   * корпусе нет, и упиралась бы в лимит джоба.
+   *
+   * Поэтому по умолчанию дозапись трогает только то, что в корпусе уже есть.
+   * Расширение вселенной — осознанное действие: `--full` или `--symbols`.
+   */
+  if (!full && !only) {
+    // Пустой корпус — это ХОЛОДНЫЙ СТАРТ (в облаке: промах кэша). Брать в
+    // этот момент весь листинг архива нельзя: 832 символа против 162 живых,
+    // и первая же ночь ушла бы в многочасовую закачку и лимит джоба. Список
+    // вселенной поэтому лежит в git — это метаданные на несколько килобайт,
+    // а не данные, и он делает холодный старт ограниченным и одинаковым
+    // локально и в облаке.
+    const known = new Set(scanCorpus(outDir).map((c) => c.symbol));
+    const wanted = known.size > 0 ? known : new Set(committedUniverse());
+    if (wanted.size > 0) {
+      const before = symbols.length;
+      symbols = symbols.filter((s) => wanted.has(s));
+      if (symbols.length < before) {
+        console.error(
+          `Дозапись: ${symbols.length} символов из ${before} доступных в источнике ` +
+            `(${known.size > 0 ? "по корпусу" : "по списку вселенной из git"}). ` +
+            "Расширение вселенной — только с --full или --symbols.",
+        );
+      }
+    }
+  }
+
   if (limit > 0) symbols = symbols.slice(0, limit);
   console.error(
     `Источник: ${source} (${HOSTS[source].klines}). Символов: ${symbols.length}. ТФ: ${tfs.join(",")}. Каталог: ${outDir}.` +
