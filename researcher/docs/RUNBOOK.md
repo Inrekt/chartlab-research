@@ -332,7 +332,10 @@ npx tsx researcher/ownerTrades.ts --symbol SOLUSDT --dir short \
 может только карантин эпохи, а он необратим и применяется только по прямому
 «да». Команда (сухой прогон без `--apply`):
 ```bash
-cd /Users/user/chartlab-research && npx tsx researcher/quarantine.ts --family liquidity_magnet --from 2026-07-31 --to 2026-08-09 --reason "вырожденный стоп: 11.8% сделок с шириной 0.25-1 ATR вместо 1.5-3" --apply
+cd /Users/user/chartlab-research && # Сначала БЕЗ --apply (сухой прогон), потом с ним. Проверено на копии журнала:
+#   funding_pressure 216 · range_sweep 108 · range_sweep_v2 216 · range_sweep_v3 108
+#   liquidity_magnet 432 — все освобождаются полностью.
+npx tsx researcher/quarantine.ts --family liquidity_magnet --from 2026-07-31 --to 2026-08-10 --reason "вырожденный стоп и обнулённые издержки" --apply
 ```
 (и то же для `range_sweep`, `range_sweep_v2`, `range_sweep_v3`)
 
@@ -353,7 +356,9 @@ cd /Users/user/chartlab-research && npx tsx researcher/quarantine.ts --family li
 который измерением не был. Запись append-only и необратима, поэтому применяю
 только по прямому «да»:
 ```bash
-cd /Users/user/chartlab-research && npx tsx researcher/quarantine.ts --family funding_pressure --from 2026-08-04 --to 2026-08-08 --reason "COLLECT_DIR не задан в облаке" --apply
+cd /Users/user/chartlab-research && # 1) СУХОЙ ПРОГОН — покажет, сколько попадёт и сколько освободится:
+npx tsx researcher/quarantine.ts --family funding_pressure --from 2026-08-04 --to 2026-08-08 --reason "COLLECT_DIR не задан в облаке"
+# 2) если числа устраивают — повторить с --apply
 ```
 Без `--apply` — сухой прогон, показывает последствия и ничего не пишет.
 Планку дефляции карантин НЕ трогает намеренно.

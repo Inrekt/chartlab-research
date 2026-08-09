@@ -44,19 +44,37 @@ async function main(): Promise<void> {
 
     const before = ledger.resamplableExclusions().size;
     const total = ledger.allCandidateIds().size;
+    // Сухой прогон обязан показывать ПОСЛЕДСТВИЯ, а не текущее состояние:
+    // иначе он не отвечает на единственный вопрос, ради которого нужен, и
+    // необратимая операция запускается вслепую.
+    const preview = ledger.quarantinePreview(family, from, to);
     if (!process.argv.includes("--apply")) {
       console.error(
         [
           "СУХОЙ ПРОГОН — ничего не записано.",
           `семейство: ${family}`,
-          `окно:      ${from} .. ${to}`,
+          `окно:      ${from} .. ${to}  (голая дата = весь день)`,
           `причина:   ${reason}`,
-          `сейчас в журнале ${total} испытаний, из них закрывают комбинации ${before}.`,
           "",
-          "Повторить с --apply, чтобы записать. Запись append-only и необратима.",
+          `под карантин попадёт испытаний: ${preview.affected}`,
+          `из них освободят комбинации:    ${preview.freed}`,
+          `уже свободны (повтор):          ${preview.alreadyFree}`,
+          "",
+          `в журнале всего ${total} испытаний, закрывают комбинации ${before}.`,
+          "",
+          preview.affected === 0
+            ? "⚠️ ПОД ОКНО НЕ ПОПАЛО НИ ОДНОГО ИСПЫТАНИЯ — проверь семейство и даты."
+            : "Повторить с --apply, чтобы записать. Запись append-only и необратима.",
         ].join("\n"),
       );
       return;
+    }
+    if (preview.affected === 0) {
+      console.error(
+        "отказ: под окно не попало ни одного испытания. Пустой карантин — это " +
+          "почти всегда опечатка в дате или имени семейства, а не намерение.",
+      );
+      process.exit(3);
     }
 
     ledger.quarantineEpoch(family, from, to, reason);

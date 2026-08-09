@@ -566,12 +566,38 @@ export class TrialLedger {
    * позволило бы вычеркнуть отдельные НЕУДОБНЫЕ испытания, а это уже подгонка.
    */
   quarantineEpoch(setupFamily: string, fromIso: string, toIso: string, reason: string): number {
+    const [from, to] = normalizeWindow(fromIso, toIso);
     this.db
       .prepare(
         "INSERT INTO quarantine(setup_family, from_iso, to_iso, reason, created_at) VALUES(?,?,?,?,?)",
       )
-      .run(setupFamily, fromIso, toIso, reason, this.now());
+      .run(setupFamily, from, to, reason, this.now());
     return this.quarantinedIds().size;
+  }
+
+  /**
+   * Что БУДЕТ освобождено, если объявить такой карантин. Ничего не пишет.
+   *
+   * Без этого сухой прогон отвечал на вопрос «сколько сейчас в журнале», а не
+   * «что изменится» — то есть не отвечал на единственный вопрос, ради которого
+   * он существует, и владелец запускал бы необратимую операцию вслепую.
+   */
+  quarantinePreview(
+    setupFamily: string,
+    fromIso: string,
+    toIso: string,
+  ): { affected: number; freed: number; alreadyFree: number } {
+    const [from, to] = normalizeWindow(fromIso, toIso);
+    const rows = this.db
+      .prepare(
+        `SELECT candidate_id FROM trials
+          WHERE setup_family = ? AND created_at >= ? AND created_at <= ?`,
+      )
+      .all(setupFamily, from, to) as { candidate_id: string }[];
+    const excluded = this.resamplableExclusions();
+    let freed = 0;
+    for (const r of rows) if (excluded.has(r.candidate_id)) freed += 1;
+    return { affected: rows.length, freed, alreadyFree: rows.length - freed };
   }
 
   /** Испытания, попавшие под карантин. */
@@ -723,6 +749,24 @@ export class TrialLedger {
   close(): void {
     this.db.close();
   }
+}
+
+/**
+ * Границы окна карантина: голая дата означает ВЕСЬ день.
+ *
+ * `created_at` хранится полным ISO («2026-08-08T10:00:00.000Z»), а сравнение в
+ * SQLite строковое. Поэтому `to = "2026-08-08"` отсекало ВЕСЬ день 8 августа:
+ * у равного префикса более длинная строка больше. Проверено — из трёх записей
+ * в окне ловилась одна.
+ *
+ * Дефект тихий вдвойне: карантин отчитывался об успехе, а последний день
+ * отравленной эпохи оставался закрытым навсегда. Именно так и была написана
+ * готовая команда в RUNBOOK.
+ */
+export function normalizeWindow(fromIso: string, toIso: string): [string, string] {
+  const from = fromIso.includes("T") ? fromIso : `${fromIso}T00:00:00.000Z`;
+  const to = toIso.includes("T") ? toIso : `${toIso}T23:59:59.999Z`;
+  return [from, to];
 }
 
 function toTrialRow(row: Record<string, unknown>): TrialRow {
