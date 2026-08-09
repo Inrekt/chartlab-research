@@ -81,8 +81,11 @@ const SIGMA_FLOOR = 0.5;
  * Взят ВЕРХНИЙ из замеренных (0.44 на 4ч против 0.20 на 1ч), потому что
  * завышенная ρ даёт больший σ_день и более осторожный тест. Ноль здесь вернул
  * бы ровно ту ошибку, от которой защищает вся правка.
+ *
+ * Экспортируется: надзор обязан считать реквалификацию ТЕМ ЖЕ прибором, что и
+ * инкубатор, иначе пороги молча разъезжаются — так уже случилось однажды.
  */
-const ICC_FALLBACK_RHO = 0.45;
+export const ICC_FALLBACK_RHO = 0.45;
 
 export type CandleSource = (
   symbol: string,
@@ -112,7 +115,25 @@ export type CandleSource = (
 export function corpusCandleSource(): CandleSource {
   return async (symbol, tf, startTimeSec) => {
     const all = loadCandles(symbol, tf);
-    if (!all) return [];
+    /*
+     * КОРПУСА НЕТ — это отказ источника, и он обязан быть исключением.
+     *
+     * Раньше здесь возвращался пустой массив, неотличимый от нормального «за
+     * этот час новых баров не появилось». Потребитель на такое молча делал
+     * `continue`, счётчик отказов не рос, страж «упали ВСЕ символы» не
+     * срабатывал — и кандидат копил календарь молчания, пока через 365 дней
+     * не умирал «не доказавшим край». Отказ инфраструктуры записывался бы в
+     * журнал как вывод о рынке.
+     *
+     * Путь не гипотетический: в облаке корпус живёт в кэше раннера, и на
+     * промахе кэша каталога просто нет.
+     */
+    if (!all) {
+      throw new Error(
+        `корпус не содержит ${symbol} ${tf}: спросить не получилось, ` +
+          "и это отказ источника, а не отсутствие сделок",
+      );
+    }
     return all.filter((c) => c.time >= startTimeSec);
   };
 }
@@ -165,7 +186,11 @@ export async function catchUpTrades(
       continue;
     }
     const closed = candles.filter((c) => c.time + tfSec <= nowSec());
-    if (closed.length < 250) continue; // прогрева не хватает — сигналы не считаемы
+    // Прогрева не хватает — сигналы не считаемы. Это НЕ отказ: у монеты,
+    // листингованной недавно, честно мало баров, а пустой ответ означает
+    // «новых баров с прошлого раза нет» — обычное состояние часового тика.
+    // Настоящий отказ (корпуса нет вовсе) распознаёт САМ ИСТОЧНИК и бросает.
+    if (closed.length < 250) continue;
     const trades = runBacktest(closed, config, symbol).filter((t) => t.entryTime > inc.frozenAt);
     inserted += book.recordTrades(candidateId, trades);
     book.setCursor(candidateId, symbol, closed[closed.length - 1].time);

@@ -197,6 +197,10 @@ interface SharedSeriesEntry {
   firstTime: number;
   lastTime: number;
   lastClose: number;
+  /** Живой бар меняет high/low/volume раньше close — см. проверку ниже. */
+  lastHigh: number;
+  lastLow: number;
+  lastVolume: number;
   series: Map<string, (number | null)[]>;
 }
 const sharedSeriesCache = new WeakMap<Candle[], SharedSeriesEntry>();
@@ -210,13 +214,25 @@ export function sharedSeriesCacheFor(candles: Candle[]): Map<string, (number | n
     entry.len !== candles.length ||
     entry.firstTime !== (first?.time ?? 0) ||
     entry.lastTime !== (last?.time ?? 0) ||
-    entry.lastClose !== (last?.close ?? 0)
+    entry.lastClose !== (last?.close ?? 0) ||
+    // Живой бар меняет не только close: сначала обновляются high/low/volume, и
+    // close вполне может остаться прежним (тик ушёл вверх и вернулся). Без них
+    // отпечаток не менялся, и отдавался ряд, посчитанный ДО движения — ATR
+    // меньше настоящего завышает растянутость и включает вход, которого нет, а
+    // устаревшая граница канала показывает пробой уровня, которого там уже
+    // нет. Обе ошибки молчат: значение выглядит обычным числом.
+    entry.lastHigh !== (last?.high ?? 0) ||
+    entry.lastLow !== (last?.low ?? 0) ||
+    entry.lastVolume !== (last?.volume ?? 0)
   ) {
     entry = {
       len: candles.length,
       firstTime: first?.time ?? 0,
       lastTime: last?.time ?? 0,
       lastClose: last?.close ?? 0,
+      lastHigh: last?.high ?? 0,
+      lastLow: last?.low ?? 0,
+      lastVolume: last?.volume ?? 0,
       series: new Map(),
     };
     sharedSeriesCache.set(candles, entry);
@@ -413,7 +429,21 @@ function matchesPriceAction(
   pattern: "engulfing" | "pinbar" | "insideBar",
   lookback: number
 ): boolean {
-  if (index < lookback) return false;
+  /*
+   * `Math.max(1, lookback)`, а не просто `lookback`.
+   *
+   * Все три паттерна читают ПРЕДЫДУЩИЙ бар, поэтому нулевой бар для них
+   * невычислим при любом lookback. При lookback ≥ 1 он защищён случайно, а при
+   * lookback = 0 проверка пропускала бар 0, обращение к candles[-1] давало
+   * undefined и падение на чтении поля.
+   *
+   * Цена не выдуманная сделка, а ОБРЫВ ПРОГОНА: ночь на тысячах испытаний
+   * падает на первом же таком кандидате, и вместе с ней теряются результаты
+   * всех посчитанных до него. Сейчас грамматика даёт только 5 и 30, то есть
+   * дефект латентный — но ноль разрешён типом и придёт из первого же
+   * рукописного конфига.
+   */
+  if (index < Math.max(1, lookback)) return false;
   const curr = candles[index];
   const prev = candles[index - 1];
 

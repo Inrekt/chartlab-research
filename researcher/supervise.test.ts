@@ -264,14 +264,22 @@ describe("supervision lifecycle", () => {
     const first = await runSupervision(opts);
     expect(first.decayed).toEqual([id]);
 
-    // в деградации продолжает лить (сделки ПОСЛЕ тревоги) — SPRT добивает
+    // В деградации продолжает лить — SPRT добивает.
+    //
+    // Сделки разнесены по ОДНОЙ на день и их сорок, а не пятнадцать по две:
+    // реквалификация переведена на ДНЕВНЫЕ наблюдения, как и инкубатор
+    // (раньше здесь оставался посделочный счёт — путь, пропущенный при
+    // переводе, и он давал ложное принятие 14.5% вместо ≤5.6%). Дневной тест
+    // требует больше свидетельств на тот же вердикт, и это его цена: пятнадцать
+    // сделок за восемь дней теперь честно недостаточны, чтобы кого-то
+    // похоронить.
     const book2 = new IncubationBook(dbPath);
     book2.recordTrades(
       id,
-      Array.from({ length: 15 }, (_, i) => paperTrade(gradAt + (65 + i) * 12 * HOUR, -1)),
+      Array.from({ length: 40 }, (_, i) => paperTrade(gradAt + (33 + i) * 24 * HOUR, -1)),
     );
     book2.close();
-    const second = await runSupervision({ ...opts, nowSec: () => gradAt + 60 * 86_400 });
+    const second = await runSupervision({ ...opts, nowSec: () => gradAt + 80 * 86_400 });
     expect(second.retired).toEqual([id]);
     const ledger = new TrialLedger(dbPath);
     expect(ledger.getTrial(id)!.state).toBe("RETIRED");
@@ -282,7 +290,7 @@ describe("supervision lifecycle", () => {
     expect(card).toContain("Торговлю по карточке остановить.");
     expect(card).toContain("🪦 RETIRED: край не восстановился (SPRT)");
     expect(card).toContain(
-      `- ${new Date((gradAt + 60 * 86_400) * 1000).toISOString().slice(0, 10)} — 🪦`,
+      `- ${new Date((gradAt + 80 * 86_400) * 1000).toISOString().slice(0, 10)} — 🪦`,
     );
   });
 
