@@ -51,9 +51,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: corpus
-          key: corpus-perp-${{ github.run_id }}
+          key: corpus-perp-v2-${{ github.run_id }}
           restore-keys: |
-            corpus-perp-
+            corpus-perp-v2-
 
       - name: Catch up incubation + supervision
         env:

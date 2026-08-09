@@ -56,9 +56,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: corpus
-          key: corpus-perp-${{ github.run_id }}
+          key: corpus-perp-v2-${{ github.run_id }}
           restore-keys: |
-            corpus-perp-
+            corpus-perp-v2-
 
       # Источник — АРХИВ, а не REST, и это вынужденно: раннеры GitHub получают
       # от api/fapi.binance.com `451 Unavailable For Legal Reasons` (замерено
@@ -85,7 +85,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: corpus
-          key: corpus-perp-${{ github.run_id }}
+          key: corpus-perp-v2-${{ github.run_id }}
 
       - name: Run the night (both universes)
         env:
