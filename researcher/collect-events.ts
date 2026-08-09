@@ -172,10 +172,40 @@ async function runExchangeSnapshot(): Promise<void> {
   console.log(`exchangeInfo: ${parsed.symbols.length} символов → ${path}`);
 }
 
+/**
+ * Постоянная блокировка не должна тонуть в `continue-on-error`.
+ *
+ * Шаги сбора умышленно не роняют воркфлоу: bapi Binance регулярно отвечает
+ * WAF, и терять из-за этого уже собранное нельзя. Но у той же поблажки есть
+ * цена — 451 (закрыто по юрисдикции) выглядит точно так же, и снимок состава
+ * биржи молча не собирался, пока воркфлоу рапортовал успех. За 2026-08-08
+ * срез потерян НАВСЕГДА: точка во времени задним числом не снимается.
+ *
+ * `::warning::` попадает в сводку прогона, не роняя его: временный сбой
+ * по-прежнему прощается, постоянный виден.
+ */
+async function run(mode: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (error) {
+    const text = String(error);
+    if (/\b(451|403)\b/.test(text)) {
+      console.log(
+        `::warning title=Источник закрыт по юрисдикции::${mode}: ${text.split("\n")[0]} — ` +
+          "это НЕ временный сбой, ретраи не помогут. Форвардный срез за сегодня потерян " +
+          "безвозвратно. Собирать с машины, откуда биржа доступна (см. RUNBOOK, раздел про среду).",
+      );
+      return;
+    }
+    throw error;
+  }
+}
+
 const mode = process.argv[2];
-if (mode === "lifespans") await runLifespans();
-else if (mode === "announcements") await runAnnouncements(process.argv.includes("--backfill"));
-else if (mode === "exchange-snapshot") await runExchangeSnapshot();
+if (mode === "lifespans") await run(mode, runLifespans);
+else if (mode === "announcements") {
+  await run(mode, () => runAnnouncements(process.argv.includes("--backfill")));
+} else if (mode === "exchange-snapshot") await run(mode, runExchangeSnapshot);
 else {
   console.error("режимы: lifespans | announcements [--backfill] | exchange-snapshot");
   process.exit(1);
