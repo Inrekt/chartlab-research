@@ -11,6 +11,7 @@ import {
   MAX_INCUBATION_DAYS,
   MIN_GRADUATION_TRADES,
   runIncubation,
+  corpusCandleSource,
   type CandleSource,
 } from "./incubate.ts";
 import { ExchangeBlockedError } from "./binance.ts";
@@ -554,5 +555,24 @@ describe("отказ источника не выглядит как отсут�
       ),
     ).resolves.toBe(0);
     book.close();
+  });
+});
+
+describe("запасной источник — корпус", () => {
+  test("отдаёт бары от указанного момента и не падает на неизвестном символе", async () => {
+    // Существует из-за среды: раннеры GitHub получают от REST Binance 451, и
+    // без запасного пути инкубация в облаке невозможна вовсе — кандидат
+    // просидел бы 365 дней с нулём сделок и умер как «не доказавший край».
+    const source = corpusCandleSource();
+    await expect(source("НЕТ-ТАКОГО", "1h", 0)).resolves.toEqual([]);
+  });
+
+  test("отставание источника на сутки не даёт заглянуть в будущее", async () => {
+    // Ключ к тому, почему сутки отставания безвредны: источник обязан отдавать
+    // только бары ПОСЛЕ запрошенного момента, а догонка сверху отсекает
+    // незакрытые. Информации о будущем в этом нет ни при каком лаге.
+    const source = corpusCandleSource();
+    const bars = await source("BTCUSDT", "1h", 4_000_000_000);
+    expect(bars.every((c) => c.time >= 4_000_000_000)).toBe(true);
   });
 });

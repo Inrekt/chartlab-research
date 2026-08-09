@@ -22,6 +22,7 @@ import { runBacktest } from "../src/core/backtest/engine.ts";
 import { tradeCostInR } from "../src/core/committee/costModel.ts";
 import { toStrategyConfig, type SignalTf } from "./grammar.ts";
 import { ExchangeBlockedError, fetchBinanceKlines, TF_SECONDS } from "./binance.ts";
+import { loadCandles } from "./corpus.ts";
 import { buildCard, DEFAULT_VAULT_CARDS_DIR, writeCard } from "./cards.ts";
 import { IncubationBook, type PaperTradeRow } from "./incubationBook.ts";
 import { TrialLedger } from "./ledger.ts";
@@ -52,6 +53,33 @@ export type CandleSource = (
   tf: SignalTf,
   startTimeSec: number,
 ) => Promise<Candle[]>;
+
+/**
+ * Запасной источник — КОРПУС, когда биржа недоступна напрямую.
+ *
+ * Нужен из-за среды: раннеры GitHub получают от REST Binance 451 (блокировка
+ * по юрисдикции), и без запасного пути инкубация в облаке невозможна вовсе —
+ * кандидат просидел бы 365 дней с нулём сделок и умер как «не доказавший
+ * край». Корпус при этом лежит рядом: ночь наполняет его из файлового архива
+ * биржи, который открыт.
+ *
+ * ⚠️ Отставание на сутки методологически БЕЗВРЕДНО, и это не поблажка себе.
+ * Форвард-тест накапливает ЗАКРЫТЫЕ сделки; узнать о закрытой сделке на день
+ * позже не даёт ни грамма информации о будущем и ничего не смещает — меняется
+ * только момент, когда мы об этом узнаём. Заморозка правил по-прежнему
+ * происходит в момент валидации, а не задним числом.
+ *
+ * Чего этот источник НЕ даёт: живых сигналов для реальной торговли. Они
+ * понадобятся только после первого выпускника, и к тому времени нужен хост с
+ * прямым доступом к бирже.
+ */
+export function corpusCandleSource(): CandleSource {
+  return async (symbol, tf, startTimeSec) => {
+    const all = loadCandles(symbol, tf);
+    if (!all) return [];
+    return all.filter((c) => c.time >= startTimeSec);
+  };
+}
 
 export interface IncubationSummary {
   seeded: number;
