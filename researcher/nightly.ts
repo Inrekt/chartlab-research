@@ -17,7 +17,7 @@ import type { SignalTf } from "./grammar.ts";
 import { runIncubation, type IncubationSummary } from "./incubate.ts";
 import { DB_PATH, DEFAULT_VAULT_DIR } from "./paths.ts";
 import { assertDataSources } from "./preflight.ts";
-import { runScreen, type ScreenSummary } from "./screen.ts";
+import { runScreen, SpaceExhaustedError, type ScreenSummary } from "./screen.ts";
 import { writeStatus } from "./statusFile.ts";
 import { runSupervision, type SupervisionSummary } from "./supervise.ts";
 import { TrialLedger, STATES } from "./ledger.ts";
@@ -331,17 +331,42 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     // статус, а в нём — метрики; считать их чужой моделью значит записать в
     // журнал числа, которых не было ни в одном прогоне.
     resetActiveCosts();
+    /*
+     * «Машине нечего делать» — НЕ падение.
+     *
+     * Пространство финансируемых семейств конечно, и когда все комбинации
+     * испробованы, ночь честно не имеет работы. Это ожидаемое терминальное
+     * состояние, требующее ЧЕЛОВЕКА (новой пре-регистрации или карантина), а
+     * не починки кода.
+     *
+     * Раньше оба случая падали одинаково, и ночь уходила красной каждые сутки
+     * подряд. Красное каждый день перестаёт что-либо значить — именно так и
+     * пропускают настоящую поломку среди привычного шума. Поэтому здесь
+     * состояние пишется в статус ГРОМКО, а код возврата остаётся нулевым:
+     * тревога адресована владельцу, а не системе мониторинга запусков.
+     */
+    const exhausted = error instanceof SpaceExhaustedError;
     try {
       writeStatus({
         screens: [],
         incubation: EMPTY_INCUBATION,
         supervision: EMPTY_SUPERVISION,
         durationMin: null,
-        failure: reason.split("\n")[0],
+        failure: exhausted
+          ? `⚠️ ПРОСТРАНСТВО ИСЧЕРПАНО: проверять нечего. ${reason.split("\n")[0]}`
+          : reason.split("\n")[0],
       });
     } catch (writeError) {
       // Не смогли даже пожаловаться — но исходную причину терять нельзя.
       console.error(`не удалось записать статус падения: ${String(writeError)}`);
+    }
+    if (exhausted) {
+      console.error(
+        "\nЭто не поломка: все комбинации финансируемых семейств уже испробованы.\n" +
+          "Машине нужна НОВАЯ пре-регистрация с полем «кто платит» либо карантин\n" +
+          "эпохи, измеренной сломанным прибором. Ни то ни другое код сделать не может.",
+      );
+      process.exit(0);
     }
     process.exit(1);
   });
