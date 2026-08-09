@@ -25,6 +25,14 @@ const screen = {
   rejectedByGate: {},
   ledgerCounts: { trials: 10, clusters: 5 },
   diagnostics: null,
+  sampling: {
+    requested: 100,
+    picked: 100,
+    space: 522,
+    wastedAttempts: 0,
+    attemptsExhausted: false,
+    starved: false,
+  },
 } as unknown as ScreenSummary;
 
 const digest = (calibration?: Parameters<typeof buildDigest>[6]) =>
