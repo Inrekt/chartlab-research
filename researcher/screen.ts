@@ -37,6 +37,7 @@ import {
   EXITS,
   isLiquidityExit,
   LIQUIDITY_EXITS,
+  setupFamily,
   setupNeighbors,
   setupTier,
   sampleCandidates,
@@ -471,6 +472,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   const tradesA = runStageTiered(specs, (l) => l.a);
   const stageASharpes: number[] = [];
   const stageATradeCounts: number[] = [];
+  const stageAFamilies: string[] = [];
   const survivorsA: CandidateSpec[] = [];
   for (const spec of specs) {
     const id = candidateId(spec);
@@ -483,6 +485,12 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     if (trades.length >= STAGE_A_MIN_TRADES && netRs.length >= 5) {
       stageASharpes.push(tradeSharpe(netRs));
       stageATradeCounts.push(netRs.length);
+      // Семейство идёт рядом с Шарпом, потому что дисперсия для планки
+      // дефляции считается ВНУТРИ семейства: формула просит разброс ВЕЗЕНИЯ
+      // однотипных попыток, а разброс между механизмами — настоящее различие,
+      // а не шум отбора. Индексы этих трёх массивов не совпадают с `specs`:
+      // сюда попадают только кандидаты, чей Шарп вообще измерим.
+      stageAFamilies.push(setupFamily(spec.setup));
     }
     ledger.recordEval(id, "halving_16", {
       trades: trades.length,
@@ -543,6 +551,42 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     0,
     thickVariance - estimationVar(thickIdx.length >= 5 ? thickIdx : stageASharpes.map((_, i) => i)),
   );
+
+  /*
+   * GATE_VERSION=6: дисперсия для планки дефляции считается ВНУТРИ СЕМЕЙСТВА.
+   *
+   * Формула Бейли–Лопеса де Прадо просит дисперсию оценок Шарпа внутри
+   * семейства множественных проверок — разброс ВЕЗЕНИЯ однотипных попыток.
+   * Ей же скармливался разброс по ночной партии, где рядом стоят разные
+   * механизмы; различие между механизмами — настоящее, а не шум отбора, и его
+   * подстановка завышала оценку случайного максимума. Планка ∝ √varSR, и это
+   * единственный рычаг: замер мощности показал 0% прохождения при любом
+   * реалистичном крае, то есть ворота отвергли бы и Medallion.
+   *
+   * Замер отношения (521 запись gate_dsr, 7 ночей, крупнейшее семейство):
+   * дисперсия внутри семейства к дисперсии по смеси ≈ 0.42. Поэтому эффект
+   * ожидается около ÷2 по планке, а не разы. Ожидание записано ДО правки:
+   * мощность 40±15% при δ=0.25 и 15±10% при δ=0.20
+   * (docs/dsr-power-preregistration.md).
+   *
+   * ПРЕДОХРАНИТЕЛЬ. У семейства должно быть достаточно измеримых кандидатов,
+   * иначе дисперсия выродится, planка рухнет и ворота станут свободным
+   * проходом — ровно та поломка, которую они обязаны ловить. При нехватке
+   * берётся общепартийная величина, то есть СТАРОЕ, более строгое поведение.
+   */
+  const MIN_FAMILY_FOR_VARIANCE = 5;
+  const familyDeflationVariance = new Map<string, number>();
+  for (const family of new Set(stageAFamilies)) {
+    const idx = stageAFamilies
+      .map((f, i) => (f === family ? i : -1))
+      .filter((i) => i >= 0 && stageATradeCounts[i] >= MIN_TRADES_FOR_VARIANCE);
+    if (idx.length < MIN_FAMILY_FOR_VARIANCE) continue;
+    const raw = moments(idx.map((i) => stageASharpes[i])).stdDev ** 2;
+    familyDeflationVariance.set(family, Math.max(0, raw - estimationVar(idx)));
+  }
+  /** Дисперсия для планки: своя у семейства, общепартийная — при нехватке. */
+  const deflationVarianceFor = (family: string): number =>
+    familyDeflationVariance.get(family) ?? deflationVariance;
   log(`  прошло ${survivorsA.length}/${specs.length}.`);
 
   // Диагностика ПРОЦЕССА на всей партии (с проигравшими): RC Уайта — «нашла
@@ -716,14 +760,38 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
 
   // G7–G9: время, DSR с планкой из журнала, Уилсон. N — кластеры по
   // корреляции доходностей за всю жизнь журнала (см. gateDsr).
-  const { clusters: nEffective } = ledger.counts();
+  const { clusters: nEffectiveGlobal } = ledger.counts();
+  const familiesTried = ledger.familiesTried();
   const validated: ScreenSummary["validated"] = [];
   for (const f of finalists) {
     if (!applyGate("gate_temporal", f, gateTemporal(f.trades, corpusSpan))) continue;
     const netRs = netRMultiples(f.trades);
+    /*
+     * GATE_VERSION=6: N и дисперсия берутся ПО РОДОСЛОВНОЙ кандидата.
+     *
+     * Кандидат семейства свипа рождён перебором пространства свипа, а не
+     * перебором моментума; платить планкой за чужой слепой перебор он не
+     * обязан. Глобальное N при этом продолжает писаться в журнал рядом —
+     * чтобы переход между эпохами ворот был обратим и сравним.
+     */
+    const family = setupFamily(f.spec.setup);
+    const nEffective = Math.max(1, ledger.clustersForFamily(family));
+    const familyVar = deflationVarianceFor(family);
     // Вердикт — по очищенной оценке; наивная пишется рядом для сравнимости
     // ночей и обратимости перехода.
-    const dsrGate = gateDsr(netRs, nEffective, deflationVariance, batchSharpeVariance);
+    const dsrGate = gateDsr(netRs, nEffective, familyVar, batchSharpeVariance);
+    ledger.recordEval(f.id, "dsr_accounting", {
+      family,
+      nEffectiveFamily: nEffective,
+      nEffectiveGlobal,
+      deflationVarianceFamily: familyVar,
+      deflationVarianceBatch: deflationVariance,
+      // Множественность МЕЖДУ семействами этим счётчиком не покрыта. Число
+      // пишется, чтобы поправка на неё была видимой и решалась своей
+      // пре-регистрацией, а не потерялась молча.
+      familiesTried,
+      gateVersion: GATE_VERSION,
+    });
     if (!applyGate("gate_dsr", f, dsrGate)) continue;
     const netStats = statsAfterCosts(f.trades);
     // Реализованное соотношение выигрыш/проигрыш, а не номинальный takeR:
