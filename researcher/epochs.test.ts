@@ -48,6 +48,12 @@ describe("behavioralExclusionFor + sampler integration", () => {
   ): void => {
     const ledger = new TrialLedger(dbPath, { now: () => at });
     ledger.registerCandidates(specs);
+    // Партия считается ПРОГНАННОЙ только с записями оценок: правило блокирует
+    // повтор тем, что его измерили, а не тем, что его зарегистрировали.
+    // Упавшая ночь оставляет строки без оценок, и они повтор не блокируют.
+    for (const row of ledger.byState("CANDIDATE")) {
+      ledger.recordEval(row.candidateId, "halving_16", { trades: 7 });
+    }
     ledger.close();
   };
 

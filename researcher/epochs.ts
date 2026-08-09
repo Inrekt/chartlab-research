@@ -139,8 +139,26 @@ export function behavioralExclusionFor(dbPath: string, tf: SignalTf): Set<string
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     const epochSince = readEpochSince(db);
+    /*
+     * Блокируют повтор только РЕАЛЬНО ПРОГНАННЫЕ правила, то есть имеющие
+     * хотя бы одну запись оценки.
+     *
+     * Это второй, независимый от id механизм исключения, и первую правку он
+     * обошёл: кандидаты регистрируются при наборе партии, до прогона, поэтому
+     * упавшая ночь оставляет в журнале строки, чьё ПОВЕДЕНИЕ считается уже
+     * проверенным, хотя не проверялось. 2026-08-09 так закрыло 54 комбинации
+     * семейства владельца — ночь набрала партию, упала на страже и записала
+     * её; следующая набрала ноль.
+     *
+     * Здесь нельзя ошибиться в другую сторону: испытание с нулём сделок —
+     * ПОЛНОЦЕННОЕ измерение (правило не сработало ни разу, это результат), и
+     * запись оценки у него есть. Отличается именно неоценённое.
+     */
     const rows = db
-      .prepare("SELECT candidate_id, spec_json, created_at FROM trials")
+      .prepare(
+        `SELECT t.candidate_id, t.spec_json, t.created_at FROM trials t
+          WHERE EXISTS (SELECT 1 FROM evals e WHERE e.candidate_id = t.candidate_id)`,
+      )
       .all() as { candidate_id: string; spec_json: string; created_at: string }[];
     const runTfByBatch = reconstructRunTf(
       rows.filter((r) => epochSince === null || r.created_at < epochSince).map((r) => r.created_at),
