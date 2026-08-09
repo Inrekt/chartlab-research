@@ -166,6 +166,10 @@ export function liquidityFeatures(candles: readonly Candle[]): LiquidityFeatures
     weightAbove: new Float64Array(n).fill(NaN),
     weightBelow: new Float64Array(n).fill(NaN),
     atrAt: new Float64Array(n).fill(NaN),
+    sweptAboveWeight: new Float64Array(n).fill(NaN),
+    sweptBelowWeight: new Float64Array(n).fill(NaN),
+    sweptAbovePrice: new Float64Array(n).fill(NaN),
+    sweptBelowPrice: new Float64Array(n).fill(NaN),
   };
   if (n === 0) return out;
 
@@ -184,11 +188,28 @@ export function liquidityFeatures(candles: readonly Candle[]): LiquidityFeatures
 
     // 1. Снятие: уровень исчезает, как только цена его коснулась. Делаем это
     //    ДО чтения фич — на баре снятия уровня уже нет, он отработал.
+    // Снесённое ЗАПОМИНАЕТСЯ перед удалением: иначе величина, ради которой
+    // построены оба семейства ликвидности, остаётся ненаблюдаемой (см. коммент
+    // к sweptAboveWeight). Берётся сильнейшее из снесённых на баре.
     for (let k = above.length - 1; k >= 0; k--) {
-      if (bar.high >= above[k].price) above.splice(k, 1);
+      if (bar.high >= above[k].price) {
+        const lv = above[k];
+        if (!(lv.weight <= out.sweptAboveWeight[i])) {
+          out.sweptAboveWeight[i] = lv.weight;
+          out.sweptAbovePrice[i] = lv.price;
+        }
+        above.splice(k, 1);
+      }
     }
     for (let k = below.length - 1; k >= 0; k--) {
-      if (bar.low <= below[k].price) below.splice(k, 1);
+      if (bar.low <= below[k].price) {
+        const lv = below[k];
+        if (!(lv.weight <= out.sweptBelowWeight[i])) {
+          out.sweptBelowWeight[i] = lv.weight;
+          out.sweptBelowPrice[i] = lv.price;
+        }
+        below.splice(k, 1);
+      }
     }
 
     // 2. Рождение: пивот подтверждается только через PIVOT_WING баров после

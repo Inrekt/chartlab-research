@@ -117,3 +117,54 @@ describe("liquidityFeatures — причинность", () => {
     expect(short.nearAbove.length).toBe(5);
   });
 });
+
+describe("снесённый уровень записывается — иначе доза ненаблюдаема", () => {
+  /*
+   * В пре-регистрациях ДВУХ семейств заявлена проверка «край сильнее там, где
+   * кластер стопов был крупнее». Выполнить её было нельзя: снятие происходит
+   * ДО чтения признаков, и снесённый уровень из фич исчезал. Дефект
+   * наблюдаемости не даёт неверный ответ — он не даёт никакого, а проверка в
+   * документе при этом выглядит выполненной.
+   */
+  const bar = (i: number, o: number, h: number, l: number, c: number): Candle => ({
+    time: 1_700_000_000 + i * 3600,
+    open: o,
+    high: h,
+    low: l,
+    close: c,
+    volume: 1,
+  });
+
+  it("вес и цена снесённого скопления доступны на баре сноса", () => {
+    const spec: Candle[] = [];
+    let i = 0;
+    // Пила под уровнем: копит вес на почти-равных вершинах (каждая строго ниже).
+    for (const top of [110, 109.99, 109.98]) {
+      spec.push(bar(i++, 100, 101, 99, 100));
+      spec.push(bar(i++, 100, 101, 99, 100));
+      spec.push(bar(i++, 100, 101, 99, 100));
+      spec.push(bar(i++, 105, top, 104, 105)); // пивот-хай
+      spec.push(bar(i++, 100, 101, 99, 100));
+      spec.push(bar(i++, 100, 101, 99, 100));
+      spec.push(bar(i++, 100, 101, 99, 100));
+    }
+    // Вынос: high выше сохранённой цены уровня — уровень сносится.
+    const sweepIdx = i;
+    spec.push(bar(i++, 105, 115, 104, 114));
+    for (let k = 0; k < 5; k++) spec.push(bar(i++, 110, 111, 109, 110));
+
+    const f = liquidityFeatures(spec);
+    expect(f.sweptAboveWeight[sweepIdx]).toBeGreaterThanOrEqual(1);
+    expect(f.sweptAbovePrice[sweepIdx]).toBeCloseTo(110, 5);
+  });
+
+  it("на барах без сноса поле пусто — не ноль", () => {
+    // Ноль означал бы «снесли уровень нулевого веса», чего не бывает. Путаница
+    // «нет данных» с «данные равны нулю» — тот же класс тихих ошибок, что
+    // вырожденный стоп.
+    const flat = Array.from({ length: 40 }, (_, k) => bar(k, 100, 101, 99, 100));
+    const f = liquidityFeatures(flat);
+    expect([...f.sweptAboveWeight].every((v) => Number.isNaN(v))).toBe(true);
+    expect([...f.sweptBelowWeight].every((v) => Number.isNaN(v))).toBe(true);
+  });
+});
