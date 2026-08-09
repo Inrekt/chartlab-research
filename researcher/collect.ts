@@ -239,12 +239,28 @@ async function main(): Promise<void> {
   const universe = listUniverse("1h");
   const symbols = limit > 0 ? universe.slice(0, limit) : universe;
 
+  // Каждый источник изолирован: собранное сегодня невосстановимо, поэтому
+  // упавший сборщик обязан унести только СЕБЯ. Раньше метрики Binance и
+  // Deribit шли без catch — их падение выбрасывало main() до записи всех
+  // последующих источников, то есть один недоступный эндпоинт стирал день
+  // фандинга, F&G и макро разом.
+  const guarded = async (source: string, run: () => Promise<SourceReport>): Promise<SourceReport> =>
+    run().catch((e) => ({ source, ok: false, detail: String(e) }));
+
   const reports: SourceReport[] = [];
-  for (const date of dates) reports.push(await collectBinanceMetrics(dir, date, symbols));
-  reports.push(await collectDeribit(dir, dates.at(-1)!));
-  reports.push(await collectFearGreed(dir).catch((e) => ({ source: "fear-greed", ok: false, detail: String(e) })));
-  reports.push(await collectFred(dir).catch((e) => ({ source: "fred", ok: false, detail: String(e) })));
-  reports.push(snapshotUniverse(dir, dates.at(-1)!, universe));
+  for (const date of dates) {
+    reports.push(
+      await guarded(`binance-metrics ${date}`, () => collectBinanceMetrics(dir, date, symbols)),
+    );
+  }
+  reports.push(await guarded("deribit", () => collectDeribit(dir, dates.at(-1)!)));
+  reports.push(await guarded("fear-greed", () => collectFearGreed(dir)));
+  reports.push(await guarded("fred", () => collectFred(dir)));
+  try {
+    reports.push(snapshotUniverse(dir, dates.at(-1)!, universe));
+  } catch (e) {
+    reports.push({ source: "universe", ok: false, detail: String(e) });
+  }
 
   for (const r of reports) console.error(`${r.ok ? "✓" : "✗"} ${r.source}: ${r.detail}`);
   console.log(JSON.stringify({ dates, dir, reports }));

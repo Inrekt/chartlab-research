@@ -36,7 +36,40 @@ jobs:
         env:
           COLLECT_DIR: ${{ github.workspace }}/data/market
         run: npx tsx researcher/collect.ts | tee collect-summary.json
+
+      # Лента анонсов и состав биржи — тоже невосстановимый форвардный срез,
+      # но collect-events не запускался НИ РАЗУ: расписания у него не было.
+      # continue-on-error, потому что bapi Binance регулярно отвечает WAF, и
+      # это не повод терять уже собранное выше.
+      - name: Collect announcements + exchange snapshot
+        continue-on-error: true
+        env:
+          COLLECT_DIR: ${{ github.workspace }}/data/market
+        run: |
+          npx tsx researcher/collect-events.ts announcements
+          npx tsx researcher/collect-events.ts exchange-snapshot
+
+      # Времена жизни символов — по одному запросу к S3 НА КАЖДЫЙ символ
+      # (500+), поэтому раз в неделю, а не ежедневно: факт меняется медленно,
+      # а ежедневный прогон жёг бы минуты Actions без новой информации.
+      - name: Collect symbol lifespans (weekly)
+        continue-on-error: true
+        env:
+          COLLECT_DIR: ${{ github.workspace }}/data/market
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$(date -u +%u)" != "7" ] && [ "$EVENT" != "workflow_dispatch" ]; then
+            echo "не воскресенье — пропускаем"
+            exit 0
+          fi
+          npx tsx researcher/collect-events.ts lifespans
+
+      # if: always() по той же причине, что у журнала: собранное сегодня
+      # невосстановимо. Без него падение ЛЮБОГО шага выше выбрасывало день
+      # фандинга, открытого интереса и снимков вселенной — данные, которые
+      # задним числом не купить ни за какие деньги.
       - name: Commit data
+        if: always()
         working-directory: data
         run: |
           git config user.name "chartlab-collector"
