@@ -74,6 +74,22 @@ export interface Provenance {
   corpusVersion?: string;
 }
 
+export interface OwnerTradeRow {
+  id: number;
+  symbol: string;
+  direction: "long" | "short";
+  entryIso: string;
+  entryPrice: number;
+  stopPrice: number | null;
+  targetPrice: number | null;
+  exitIso: string | null;
+  exitPrice: number | null;
+  note: string | null;
+  setupLabel: string | null;
+  context: unknown;
+  source: string;
+}
+
 export interface TrialCounts {
   /** Всего испытаний за всю жизнь журнала — сырое N. */
   trials: number;
@@ -218,9 +234,120 @@ export class TrialLedger {
       BEGIN SELECT RAISE(ABORT, 'quarantine is append-only'); END;
     `);
 
+    /*
+     * Сделки ВЛАДЕЛЬЦА — отдельный, самый ценный вид записи в этом журнале.
+     *
+     * Почему они здесь, а не в заметках. Три попытки формализовать его правило
+     * провалились, и каждый раз выяснялось, что проверялось НЕ ТО: частота
+     * вышла в 8 раз ниже реальной, сопровождение сделки было другим, издержки
+     * считались сломанным прибором. Угадывать правило по описанию словами мы
+     * пробовали трижды; здесь лежит то, по чему его можно ВОССТАНОВИТЬ —
+     * фактические точки входа.
+     *
+     * `context_json` — снимок рыночной обстановки НА МОМЕНТ ВХОДА. Он
+     * невосстановим задним числом даже приблизительно: скопления ликвидности,
+     * фандинг, открытый интерес и фаза сессии меняются поминутно, и через
+     * полгода останется только цена. Поэтому снимок делается при записи
+     * сделки, а не при её анализе.
+     *
+     * Append-only, как и всё в этом журнале: сделка, записанная и потом
+     * «уточнённая» задним числом, перестаёт быть свидетельством.
+     */
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS owner_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        entry_iso TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        stop_price REAL,
+        target_price REAL,
+        exit_iso TEXT,
+        exit_price REAL,
+        note TEXT,
+        setup_label TEXT,
+        context_json TEXT,
+        source TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_owner_trades_symbol ON owner_trades(symbol, entry_iso);
+      CREATE TRIGGER IF NOT EXISTS owner_trades_append_only BEFORE UPDATE ON owner_trades
+      BEGIN SELECT RAISE(ABORT, 'owner_trades is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS owner_trades_no_delete BEFORE DELETE ON owner_trades
+      BEGIN SELECT RAISE(ABORT, 'owner_trades is append-only'); END;
+    `);
+
     this.db
-      .prepare("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '2')")
+      .prepare("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '3')")
       .run();
+  }
+
+  /**
+   * Записать сделку владельца. Возвращает id.
+   *
+   * ⚠️ Направление и цены НЕ проверяются на «разумность» намеренно: это
+   * свидетельство, а не форма ввода. Если владелец записал стоп ниже входа у
+   * шорта — значит так и было, и молча «исправлять» его данные значит
+   * подделывать источник.
+   */
+  addOwnerTrade(t: {
+    symbol: string;
+    direction: "long" | "short";
+    entryIso: string;
+    entryPrice: number;
+    stopPrice?: number | null;
+    targetPrice?: number | null;
+    exitIso?: string | null;
+    exitPrice?: number | null;
+    note?: string | null;
+    setupLabel?: string | null;
+    context?: unknown;
+    source: string;
+  }): number {
+    const info = this.db
+      .prepare(
+        `INSERT INTO owner_trades(symbol, direction, entry_iso, entry_price, stop_price,
+           target_price, exit_iso, exit_price, note, setup_label, context_json, source, created_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        t.symbol,
+        t.direction,
+        t.entryIso,
+        t.entryPrice,
+        t.stopPrice ?? null,
+        t.targetPrice ?? null,
+        t.exitIso ?? null,
+        t.exitPrice ?? null,
+        t.note ?? null,
+        t.setupLabel ?? null,
+        t.context === undefined ? null : JSON.stringify(t.context),
+        t.source,
+        this.now(),
+      );
+    return Number(info.lastInsertRowid);
+  }
+
+  /** Сделки владельца, по возрастанию времени входа. */
+  ownerTrades(): OwnerTradeRow[] {
+    const rows = this.db
+      .prepare("SELECT * FROM owner_trades ORDER BY entry_iso")
+      .all() as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: Number(r.id),
+      symbol: String(r.symbol),
+      direction: r.direction as "long" | "short",
+      entryIso: String(r.entry_iso),
+      entryPrice: Number(r.entry_price),
+      stopPrice: r.stop_price === null ? null : Number(r.stop_price),
+      targetPrice: r.target_price === null ? null : Number(r.target_price),
+      exitIso: r.exit_iso === null ? null : String(r.exit_iso),
+      exitPrice: r.exit_price === null ? null : Number(r.exit_price),
+      note: r.note === null ? null : String(r.note),
+      setupLabel: r.setup_label === null ? null : String(r.setup_label),
+      context: r.context_json === null ? null : JSON.parse(String(r.context_json)),
+      source: String(r.source),
+    }));
   }
 
   /**
