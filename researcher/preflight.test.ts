@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertDataSources, dataSourceHealth } from "./preflight.ts";
+import { assertDataSources, corpusFreshnessVerdict, dataSourceHealth } from "./preflight.ts";
 
 const original = process.env.COLLECT_DIR;
 const originalHistory = process.env.RESEARCHER_HISTORY_DIR;
@@ -31,12 +31,26 @@ function fakeRoot(counts: Record<string, number>): string {
  * они мерили бы рабочую копию разработчика и падали бы у того, кто корпус ещё
  * не скачал.
  */
-function fakeCorpus(n: number): string {
+function fakeCorpus(n: number, lastIso?: string): string {
   const dir = mkdtempSync(join(tmpdir(), "preflight-corpus-"));
   for (let i = 0; i < n; i++) writeFileSync(join(dir, `SYM${i}_1h.json.gz`), "");
+  if (lastIso) {
+    writeFileSync(
+      join(dir, "manifest.json"),
+      JSON.stringify({
+        source: "perp",
+        symbols: n,
+        coverage: [{ symbol: "BTCUSDT", tf: "1h", firstIso: "2019-09-08T00:00:00.000Z", lastIso }],
+      }),
+    );
+  }
   process.env.RESEARCHER_HISTORY_DIR = dir;
   return dir;
 }
+
+/** ISO-время «N суток назад» от фиксированной точки отсчёта тестов. */
+const NOW = Date.parse("2026-08-09T12:00:00.000Z");
+const daysAgo = (d: number) => new Date(NOW - d * 86_400_000).toISOString();
 
 describe("предполётная проверка источников", () => {
   it("ловит РОВНО ту аварию, что случилась: каталога фандинга нет", () => {
@@ -97,6 +111,46 @@ describe("предполётная проверка источников", () =>
 
     expect(() => assertDataSources()).toThrow(/корпус свечей/);
     expect(() => assertDataSources()).toThrow(/RESEARCHER_HISTORY_DIR/);
+    rmSync(root, { recursive: true, force: true });
+    rmSync(corpus, { recursive: true, force: true });
+  });
+
+  it("свежесть меряется по манифесту, а не по mtime файлов", () => {
+    // mtime подделывается любым git checkout и восстановлением кэша — то есть
+    // врал бы «свежо» ровно в той ситуации, ради которой проверка написана.
+    const corpus = fakeCorpus(120, daysAgo(1));
+    expect(corpusFreshnessVerdict(NOW).level).toBe("ok");
+    rmSync(corpus, { recursive: true, force: true });
+
+    const stale = fakeCorpus(120, daysAgo(5));
+    const warn = corpusFreshnessVerdict(NOW);
+    expect(warn.level).toBe("warn");
+    expect(warn.ageDays).toBeCloseTo(5, 1);
+    rmSync(stale, { recursive: true, force: true });
+
+    const dead = fakeCorpus(120, daysAgo(20));
+    expect(corpusFreshnessVerdict(NOW).level).toBe("fail");
+    rmSync(dead, { recursive: true, force: true });
+  });
+
+  it("корпус без манифеста не считается ни свежим, ни просроченным", () => {
+    // Честный ответ «не знаю» лучше выдуманного вердикта: счётчик файлов уже
+    // отвечает на вопрос «корпус вообще есть», а свежесть без манифеста
+    // измерить нечем.
+    const corpus = fakeCorpus(120);
+    expect(corpusFreshnessVerdict(NOW).level).toBe("unknown");
+    rmSync(corpus, { recursive: true, force: true });
+  });
+
+  it("двухнедельная просроченность роняет ночь, хотя все файлы на месте", () => {
+    // Ровно та авария, которую счётчик файлов не ловит по построению: корпус
+    // простоял две недели, файлов столько же, никто не заметил.
+    const root = fakeRoot({ funding: 60, "metrics-1h": 60 });
+    process.env.COLLECT_DIR = root;
+    const corpus = fakeCorpus(120, "2020-01-01T00:00:00.000Z");
+
+    expect(() => assertDataSources()).toThrow(/просрочен/);
+    expect(() => assertDataSources()).toThrow(/форвард измерял бы не то, что отбор/);
     rmSync(root, { recursive: true, force: true });
     rmSync(corpus, { recursive: true, force: true });
   });

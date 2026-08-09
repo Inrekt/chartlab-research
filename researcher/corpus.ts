@@ -103,6 +103,51 @@ export function corpusVersion(historyDir = HISTORY_DIR): string {
   }
 }
 
+export interface CorpusFreshness {
+  /** Самый свежий бар во всём корпусе, ISO. `null` — манифеста нет. */
+  newestIso: string | null;
+  /** Возраст этого бара в сутках; `null` при отсутствии манифеста. */
+  ageDays: number | null;
+  /** Сколько символов отстают от лидера больше чем на сутки. */
+  laggingSymbols: number;
+}
+
+/**
+ * Свежесть корпуса — по манифесту, а НЕ по mtime файлов.
+ *
+ * Разница принципиальная: `git checkout` и восстановление кэша ставят файлам
+ * сегодняшнее время, то есть mtime врал бы «свежо» ровно в той ситуации, ради
+ * которой проверка написана. Манифест хранит `lastIso` — таймстемп последнего
+ * БАРА, и подделать его нельзя ничем, кроме реальной дозаписи данных.
+ *
+ * Существует из-за конкретной аварии: корпус простоял две недели, файлы были
+ * на месте, число их не менялось — и никто не заметил. Счётчик файлов такое
+ * не ловит по построению.
+ *
+ * `laggingSymbols` отделяет «сборщик умер» (отстали все) от «монету делистили»
+ * (отстала одна) — это разные поломки с разным лечением.
+ */
+export function corpusFreshness(historyDir = HISTORY_DIR, now = Date.now()): CorpusFreshness {
+  try {
+    const manifest = JSON.parse(readFileSync(join(historyDir, "manifest.json"), "utf8")) as {
+      coverage?: { tf: string; lastIso: string }[];
+    };
+    const hourly = (manifest.coverage ?? []).filter((c) => c.tf === "1h" && c.lastIso);
+    if (hourly.length === 0) return { newestIso: null, ageDays: null, laggingSymbols: 0 };
+
+    const newestIso = hourly.reduce((a, c) => (c.lastIso > a ? c.lastIso : a), "");
+    const newestMs = Date.parse(newestIso);
+    const dayMs = 86_400_000;
+    return {
+      newestIso,
+      ageDays: (now - newestMs) / dayMs,
+      laggingSymbols: hourly.filter((c) => newestMs - Date.parse(c.lastIso) > dayMs).length,
+    };
+  } catch {
+    return { newestIso: null, ageDays: null, laggingSymbols: 0 };
+  }
+}
+
 export function splitHoldout(symbols: readonly string[]): UniverseSplit {
   const search: string[] = [];
   const holdout: string[] = [];

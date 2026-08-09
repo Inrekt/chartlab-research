@@ -86,6 +86,22 @@ export interface StatusHistoryRow {
   graduated: number;
 }
 
+/**
+ * Здоровье входов машины. Стоит в статусе рядом с воронкой намеренно: цифры
+ * воронки не значат НИЧЕГО, если источник, который их породил, был мёртв.
+ * Именно так 212 испытаний фандинга записались в журнал как вывод о рынке.
+ */
+export interface StatusSources {
+  /** По одному на источник: имя, сколько файлов, сколько нужно, годен ли. */
+  feeds: { name: string; files: number; required: number; ok: boolean }[];
+  corpus: {
+    newestBar: string | null;
+    ageDays: number | null;
+    laggingSymbols: number;
+    level: "ok" | "warn" | "fail" | "unknown";
+  };
+}
+
 export interface ResearcherStatus {
   version: 1;
   generatedAt: string;
@@ -96,6 +112,8 @@ export interface ResearcherStatus {
   graduates: { ref: string; since: string }[];
   recentJournal: StatusJournalRow[];
   history: StatusHistoryRow[];
+  /** Необязательно: статусы, записанные до появления поля, читаются как есть. */
+  sources?: StatusSources;
 }
 
 /** Следующее срабатывание ночного крона после `now`. */
@@ -131,6 +149,12 @@ export interface BuildStatusInput {
   previous?: ResearcherStatus | null;
   durationMin?: number | null;
   now?: Date;
+  /**
+   * Здоровье источников. Передаётся снаружи, а не читается здесь: buildStatus
+   * обязан оставаться чистым, иначе его тесты начнут зависеть от того, что
+   * лежит на диске у разработчика.
+   */
+  sources?: StatusSources;
 }
 
 export function buildStatus(input: BuildStatusInput): ResearcherStatus {
@@ -201,6 +225,10 @@ export function buildStatus(input: BuildStatusInput): ResearcherStatus {
       lastTickUtc: now.toISOString(),
     },
     ledger: { ...ledger.counts(), census },
+    // Здоровье входов переносится из прошлого статуса, если этот прогон его не
+    // измерил: показать ПУСТО там, где раньше было «всё хорошо», значит
+    // потерять единственный признак поломки данных.
+    sources: input.sources ?? input.previous?.sources,
     universes: isNight
       ? input.screens.map((screen) => ({
           tf: screen.tf,

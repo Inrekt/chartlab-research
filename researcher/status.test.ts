@@ -124,6 +124,35 @@ describe("buildStatus", () => {
       now: new Date("2026-07-26T11:07:00.000Z"),
     });
 
+  test("здоровье источников переносится тиком, а не обнуляется", () => {
+    // Экран читает ОДИН файл. Если часовой тик, не мерявший источники, затрёт
+    // их пустотой, панель свежести погаснет между ночами — то есть ровно тогда,
+    // когда сборщик и умирает. Пустая панель читается как «данных нет», а не
+    // как «мы не смотрели», и это неотличимо от исправной машины.
+    const sources = {
+      feeds: [{ name: "funding", files: 156, required: 50, ok: true }],
+      corpus: {
+        newestBar: "2026-07-25T18:00:00.000Z",
+        ageDays: 14.6,
+        laggingSymbols: 0,
+        level: "fail" as const,
+      },
+    };
+    const night = buildStatus({
+      screens: [screen("1h", 2000, 86, 29)],
+      incubation: emptyIncubation,
+      supervision: emptySupervision,
+      ledger,
+      book,
+      states: STATES,
+      durationMin: 121,
+      now: NOW,
+      sources,
+    });
+    expect(night.sources).toEqual(sources);
+    expect(tick(night).sources).toEqual(sources);
+  });
+
   test("воронка и диагностика переносятся из прогона", () => {
     const status = build();
     expect(status.universes).toHaveLength(2);

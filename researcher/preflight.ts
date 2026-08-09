@@ -20,7 +20,7 @@
  */
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { HISTORY_DIR } from "./corpus.ts";
+import { HISTORY_DIR, corpusFreshness } from "./corpus.ts";
 
 /** Корень собранных данных — тот же дефолт, что у читателей CSV. */
 export function collectRoot(): string {
@@ -116,6 +116,44 @@ export function dataSourceHealth(): SourceHealth[] {
 }
 
 /**
+ * Пороги свежести корпуса.
+ *
+ * Почему два, а не один. Отставание на сутки-двое — нормальная жизнь: биржа
+ * бывает недоступна, шаг дозаписи умышленно не роняет прогон. Ночь на
+ * пятилетней истории с двухдневным хвостом остаётся честной ночью.
+ *
+ * А вот на длинной дистанции просроченность перестаёт быть косметикой:
+ * инкубатор тянет свежие бары ПРЯМО С БИРЖИ, а скрин считает по замороженному
+ * корпусу — и они начинают жить в разных временах. Кандидат отбирается на
+ * одном рынке, а догоняется на другом, то есть форвард измеряет не то, что
+ * отбор. Две недели — не круглое число, а измеренная длительность реальной
+ * аварии: столько корпус простоял незамеченным.
+ */
+const CORPUS_WARN_DAYS = 3;
+const CORPUS_FAIL_DAYS = 14;
+
+export interface FreshnessVerdict {
+  ageDays: number | null;
+  newestIso: string | null;
+  laggingSymbols: number;
+  level: "ok" | "warn" | "fail" | "unknown";
+}
+
+/** Свежесть корпуса с вердиктом — для статуса, тревог и предполётной проверки. */
+export function corpusFreshnessVerdict(now = Date.now()): FreshnessVerdict {
+  const { newestIso, ageDays, laggingSymbols } = corpusFreshness(corpusRoot(), now);
+  const level =
+    ageDays === null
+      ? "unknown"
+      : ageDays >= CORPUS_FAIL_DAYS
+        ? "fail"
+        : ageDays >= CORPUS_WARN_DAYS
+          ? "warn"
+          : "ok";
+  return { ageDays, newestIso, laggingSymbols, level };
+}
+
+/**
  * Падает, если хоть один источник недоступен. Вызывать в НАЧАЛЕ прогона:
  * секунда проверки против ночи испытаний, записанных в журнал как выводы.
  *
@@ -125,7 +163,35 @@ export function dataSourceHealth(): SourceHealth[] {
 export function assertDataSources(): void {
   const health = dataSourceHealth();
   const broken = health.filter((h) => !h.ok);
-  if (broken.length === 0) return;
+
+  const fresh = corpusFreshnessVerdict();
+  if (broken.length === 0) {
+    if (fresh.level === "fail") {
+      throw new Error(
+        [
+          "Предполётная проверка: корпус свечей просрочен.",
+          `  самый свежий бар: ${fresh.newestIso} (${fresh.ageDays!.toFixed(1)} сут назад)`,
+          `  порог остановки: ${CORPUS_FAIL_DAYS} сут`,
+          "",
+          "Прогон ОСТАНОВЛЕН намеренно. Инкубатор тянет свежие бары прямо с биржи,",
+          "а скрин считал бы по замороженному корпусу — кандидат отбирался бы на",
+          "одном рынке, а догонялся на другом, и форвард измерял бы не то, что отбор.",
+          "",
+          `Чинить: шаг «Top up corpus from exchange» (RESEARCHER_HISTORY_DIR = ${corpusRoot()}).`,
+          "Он намеренно continue-on-error, поэтому его падение видно только здесь.",
+        ].join("\n"),
+      );
+    }
+    // Просроченность в пределах нормы — это НЕ повод останавливать ночь, но
+    // молчать о ней нельзя: именно молчание и дало двухнедельный простой.
+    if (fresh.level === "warn") {
+      console.warn(
+        `⚠️ корпус отстаёт на ${fresh.ageDays!.toFixed(1)} сут (последний бар ${fresh.newestIso}); ` +
+          `порог остановки — ${CORPUS_FAIL_DAYS} сут`,
+      );
+    }
+    return;
+  }
 
   const lines = broken.map(
     (h) =>
