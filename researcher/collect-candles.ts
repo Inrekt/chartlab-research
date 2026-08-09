@@ -34,11 +34,26 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { pathToFileURL } from "node:url";
+import { gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
 import type { Candle } from "../src/core/types/index.ts";
 import type { SignalTf } from "./grammar.ts";
 
-type Source = "perp" | "spot";
+/**
+ * Откуда берутся свечи.
+ *
+ * `mirror` — те же ФЬЮЧЕРСНЫЕ данные, но из файлового архива Binance, а не из
+ * REST. Существует по единственной причине: раннеры GitHub получают от REST
+ * `451 Unavailable For Legal Reasons` (замерено зондом probe.yml — и на
+ * api.binance.com, и на fapi). Архив на data.binance.vision отвечает 200.
+ * Без этого источника корпус в облаке собрать нельзя вообще.
+ *
+ * Плата за обход — хвост отстаёт примерно на сутки: дневной архив за день D
+ * публикуется на следующий день. Для ночного скрина на пятилетней истории это
+ * несущественно, для инкубатора — существенно, и потому инкубация остаётся
+ * задачей машины, у которой REST открыт.
+ */
+type Source = "perp" | "spot" | "mirror";
 
 const HOSTS: Record<Source, { klines: string; info: string }> = {
   perp: {
@@ -49,6 +64,24 @@ const HOSTS: Record<Source, { klines: string; info: string }> = {
     klines: "https://api.binance.com/api/v3/klines",
     info: "https://api.binance.com/api/v3/exchangeInfo",
   },
+  mirror: {
+    klines: "https://data.binance.vision/data/futures/um",
+    info: "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision",
+  },
+};
+
+/**
+ * Какой РЫНОК описывают данные источника — не путать с тем, откуда они взяты.
+ *
+ * Поле `source` манифеста читает `binance.ts`, выбирая рынок живых баров.
+ * Записать туда «mirror» значило бы, что рынок не распознан, и живые бары
+ * молча поехали бы со спота, пока корпус фьючерсный. Ровно это расхождение
+ * уже случалось — цена ошибки известна.
+ */
+const MARKET_OF: Record<Source, "perp" | "spot"> = {
+  perp: "perp",
+  spot: "spot",
+  mirror: "perp",
 };
 
 const TF_MS: Record<SignalTf, number> = { "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000 };
@@ -67,6 +100,36 @@ const CONCURRENCY = 6;
 const MAX_RETRY = 4;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Сырые байты с ретраями — для архивов. 404 значит «файла нет», а не сбой. */
+async function getBuffer(url: string): Promise<Buffer | null> {
+  for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+    } catch (e) {
+      if (attempt === MAX_RETRY) throw e;
+      await sleep(1000 * 2 ** attempt);
+      continue;
+    }
+    // Ожидаемая пустота: дневного файла за сегодня ещё нет, месячного за
+    // текущий месяц не будет до его конца. Это не ошибка.
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      if (attempt === MAX_RETRY) throw new Error(`${res.status} ${url}`);
+      await sleep(1000 * 2 ** attempt);
+      continue;
+    }
+    return Buffer.from(await res.arrayBuffer());
+  }
+  throw new Error(`не удалось получить ${url}`);
+}
+
+async function getText(url: string): Promise<string> {
+  const buf = await getBuffer(url);
+  if (buf === null) throw new Error(`404 ${url}`);
+  return buf.toString("utf8");
+}
 
 async function getJson(url: string): Promise<unknown> {
   for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
@@ -112,8 +175,119 @@ const PERP_ALIASES: Record<string, string> = {
   LUNCUSDT: "1000LUNCUSDT",
 };
 
+// ── Архив Binance: разбор ZIP без зависимостей ──────────────────────────────
+//
+// Архивы содержат ровно один CSV. Библиотеки zip в проекте нет и заводить её
+// ради одного формата не стоит: центральный каталог читается тридцатью
+// строками, а `inflateRawSync` уже есть в стандартной библиотеке.
+
+/** Единственный файл из zip-архива Binance, распакованный в текст. */
+export function unzipSingleEntry(zip: Buffer): string {
+  // Идём от КОНЦА через End of Central Directory, а не от начала через
+  // локальный заголовок: при выставленном бите 3 размеры в локальном
+  // заголовке нулевые и лежат в дескрипторе ПОСЛЕ данных. Центральный каталог
+  // хранит их всегда — это единственный надёжный путь.
+  let eocd = -1;
+  for (let i = zip.length - 22; i >= 0 && i > zip.length - 65_557; i--) {
+    if (zip.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("zip: не найден End of Central Directory");
+
+  const cdOffset = zip.readUInt32LE(eocd + 16);
+  if (zip.readUInt32LE(cdOffset) !== 0x02014b50) throw new Error("zip: битый центральный каталог");
+
+  const method = zip.readUInt16LE(cdOffset + 10);
+  const compSize = zip.readUInt32LE(cdOffset + 20);
+  const localOffset = zip.readUInt32LE(cdOffset + 42);
+
+  if (zip.readUInt32LE(localOffset) !== 0x04034b50) throw new Error("zip: битый локальный заголовок");
+  const nameLen = zip.readUInt16LE(localOffset + 26);
+  const extraLen = zip.readUInt16LE(localOffset + 28);
+  const dataStart = localOffset + 30 + nameLen + extraLen;
+  const data = zip.subarray(dataStart, dataStart + compSize);
+
+  if (method === 0) return data.toString("utf8");
+  if (method === 8) return inflateRawSync(data).toString("utf8");
+  throw new Error(`zip: неподдерживаемый метод сжатия ${method}`);
+}
+
+/**
+ * CSV архива → свечи.
+ *
+ * ⚠️ Две ловушки формата, обе тихие. Первая: у части файлов есть строка
+ * заголовка, у части нет. Вторая опаснее — Binance перевёл часть архивов на
+ * МИКРОсекунды, и наивный разбор дал бы бары в 54-м тысячелетии, которые
+ * молча выпали бы из любого окна. Различаем по величине числа.
+ */
+/** Пустое поле — НЕ ноль: `Number("")` вернул бы 0 и притворился ценой. */
+const num = (v: string | undefined): number =>
+  v === undefined || v.trim() === "" ? NaN : Number(v);
+
+export function parseKlineCsv(csv: string): Candle[] {
+  const out: Candle[] = [];
+  for (const line of csv.split("\n")) {
+    if (line.length === 0) continue;
+    const c = line.split(",");
+    const raw = Number(c[0]);
+    if (!Number.isFinite(raw)) continue; // строка заголовка
+    // 1e14 мс ≈ 5138 год; всё, что больше, — микросекунды.
+    const timeMs = raw > 1e14 ? Math.floor(raw / 1000) : raw;
+    const candle: Candle = {
+      time: Math.floor(timeMs / 1000),
+      open: num(c[1]),
+      high: num(c[2]),
+      low: num(c[3]),
+      close: num(c[4]),
+      volume: num(c[5]),
+    };
+    // Цена обязана быть ПОЛОЖИТЕЛЬНОЙ, а не просто конечной. Пустое поле
+    // `Number("")` даёт 0, и такой бар тихо прошёл бы проверку на конечность,
+    // а дальше обнулил бы доходности и сломал любое деление на цену. Ноль
+    // хуже NaN именно тем, что выглядит числом.
+    if (candle.open > 0 && candle.high > 0 && candle.low > 0 && candle.close > 0) {
+      out.push(candle);
+    }
+  }
+  return out;
+}
+
+/** Ключи архива по префиксу (S3-листинг, постранично). */
+async function listMirrorKeys(prefix: string, delimiter = ""): Promise<string[]> {
+  const out: string[] = [];
+  let token = "";
+  for (let page = 0; page < 50; page++) {
+    const url =
+      `${HOSTS.mirror.info}?list-type=2&prefix=${encodeURIComponent(prefix)}` +
+      (delimiter ? `&delimiter=${encodeURIComponent(delimiter)}` : "") +
+      (token ? `&continuation-token=${encodeURIComponent(token)}` : "");
+    const xml = await getText(url);
+    const tag = delimiter ? "Prefix" : "Key";
+    for (const m of xml.matchAll(new RegExp(`<${tag}>([^<]+)</${tag}>`, "g"))) {
+      if (m[1] !== prefix) out.push(m[1]);
+    }
+    const next = /<NextContinuationToken>([^<]+)</.exec(xml);
+    if (!next) break;
+    token = next[1];
+  }
+  return out;
+}
+
 /** Живые USDT-символы биржи. Для перпов — только PERPETUAL в статусе TRADING. */
 async function fetchUniverse(source: Source): Promise<string[]> {
+  if (source === "mirror") {
+    // exchangeInfo закрыт для раннера (451), поэтому вселенная берётся из
+    // ЛИСТИНГА архива. Отличие смысловое и его надо знать: здесь символы,
+    // у которых КОГДА-ЛИБО были данные, включая делистнутые. Для корпуса это
+    // скорее плюс — ошибка выжившего лечится именно так.
+    const prefixes = await listMirrorKeys("data/futures/um/monthly/klines/", "/");
+    return prefixes
+      .map((p) => p.split("/").filter(Boolean).pop() ?? "")
+      .filter((sym) => sym.endsWith("USDT"))
+      .sort();
+  }
   const info = (await getJson(HOSTS[source].info)) as {
     symbols: { symbol: string; status: string; contractType?: string; quoteAsset: string }[];
   };
@@ -130,12 +304,67 @@ async function fetchUniverse(source: Source): Promise<string[]> {
  * Возвращаются только ЗАКРЫТЫЕ бары: незакрытая свеча — ещё не факт, и в
  * бэктесте её не существует (паритет с движком).
  */
+async function fetchMirrorKlines(
+  symbol: string,
+  tf: SignalTf,
+  fromMs: number,
+): Promise<Candle[]> {
+  const base = `${HOSTS.mirror.klines}`;
+  const out: Candle[] = [];
+
+  // Месячные архивы закрывают историю, дневные — хвост текущего месяца.
+  // Список берём из архива, а не строим по календарю: у каждого символа своя
+  // дата листинга, и угадывание дало бы сотни лишних 404.
+  const monthly = await listMirrorKeys(`data/futures/um/monthly/klines/${symbol}/${tf}/`);
+  const daily = await listMirrorKeys(`data/futures/um/daily/klines/${symbol}/${tf}/`);
+  const keys = [...monthly, ...daily].filter((k) => k.endsWith(".zip")).sort();
+
+  // Месячный архив перекрывает дневные того же месяца — дубли снимет
+  // mergeCandles, но качать их незачем.
+  const coveredMonths = new Set(
+    monthly.map((k) => /-(\d{4}-\d{2})\.zip$/.exec(k)?.[1]).filter(Boolean) as string[],
+  );
+
+  for (const key of keys) {
+    const isDaily = key.includes("/daily/");
+    if (isDaily) {
+      const month = /-(\d{4}-\d{2})-\d{2}\.zip$/.exec(key)?.[1];
+      if (month && coveredMonths.has(month)) continue;
+    }
+    // Дозапись: пропускаем архивы, целиком лежащие до известного хвоста.
+    const stamp = /-(\d{4}-\d{2}(?:-\d{2})?)\.zip$/.exec(key)?.[1];
+    if (fromMs > 0 && stamp) {
+      const end = isDaily
+        ? Date.parse(`${stamp}T23:59:59Z`)
+        : Date.parse(`${stamp}-01T00:00:00Z`) + 32 * 86_400_000;
+      if (Number.isFinite(end) && end < fromMs) continue;
+    }
+    const zip = await getBuffer(`${base}/${key.replace("data/futures/um/", "")}`);
+    if (zip === null) continue;
+    for (const candle of parseKlineCsv(unzipSingleEntry(zip))) {
+      if (candle.time * 1000 >= fromMs) out.push(candle);
+    }
+  }
+  out.sort((a, b) => a.time - b.time);
+  // Архив местами расходится с REST: сверка BTCUSDT 1h дала 8 отличий на
+  // 57 880 общих баров, из них 6 только по объёму. Но два бара пришли с
+  // НУЛЕВЫМ объёмом и другой ценой — это дефект архива, а не округление.
+  // Ноль объёма ломает всё, что делит на объём или считает по нему перцентиль,
+  // поэтому такие бары считаются и о них сообщается, а не проглатываются.
+  const zeroVol = out.filter((c) => c.volume === 0).length;
+  if (zeroVol > 0) {
+    console.error(`  ! ${symbol} ${tf}: баров с нулевым объёмом в архиве: ${zeroVol}`);
+  }
+  return out;
+}
+
 async function fetchKlines(
   source: Source,
   symbol: string,
   tf: SignalTf,
   fromMs: number,
 ): Promise<Candle[]> {
+  if (source === "mirror") return fetchMirrorKlines(symbol, tf, fromMs);
   const out: Candle[] = [];
   let start = fromMs;
   const now = Date.now();
@@ -188,7 +417,10 @@ export interface SymbolCoverage {
 
 /** Манифест версии корпуса — без него нельзя сказать, чем измеряли. */
 export interface CorpusManifest {
-  source: Source;
+  /** РЫНОК данных: `perp` | `spot`. Читается при выборе живых баров. */
+  source: "perp" | "spot";
+  /** ТРАНСПОРТ: чем скачано. Отличается от рынка только у архива. */
+  via?: Source;
   generatedAt: string;
   tfs: SignalTf[];
   symbols: number;
@@ -274,7 +506,11 @@ async function main(): Promise<void> {
   // рынка живых свечей в binance.ts) читал бы неправду.
   const full$ = scanCorpus(outDir);
   const manifest: CorpusManifest = {
-    source,
+    // РЫНОК, а не транспорт: `binance.ts` читает это поле, выбирая источник
+    // живых баров. «mirror» здесь означал бы «рынок не распознан», и живые
+    // бары уехали бы на спот при фьючерсном корпусе.
+    source: MARKET_OF[source],
+    via: source,
     generatedAt: new Date().toISOString(),
     tfs: [...new Set(full$.map((c) => c.tf))],
     symbols: new Set(full$.map((c) => c.symbol)).size,
@@ -318,4 +554,9 @@ export function scanCorpus(dir: string): SymbolCoverage[] {
   return out.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.tf.localeCompare(b.tf));
 }
 
-await main();
+// Защита от запуска при ИМПОРТЕ. Без неё любой `import` из этого модуля —
+// в тесте или ради scanCorpus — запускал бы полный сбор корпуса: сеть,
+// минуты и запись на диск в стороннем каталоге.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  await main();
+}

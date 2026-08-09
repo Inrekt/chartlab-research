@@ -60,14 +60,19 @@ jobs:
           restore-keys: |
             corpus-perp-
 
-      # Дозапись хвоста. На пустом кэше это полная закачка (минуты), дальше —
-      # только свежие бары. Прогон НЕ ПАДАЕТ, если биржа недоступна: у нас уже
-      # есть предполётная проверка свежести, она и решит, можно ли считать.
-      - name: Top up corpus from exchange
+      # Источник — АРХИВ, а не REST, и это вынужденно: раннеры GitHub получают
+      # от api/fapi.binance.com `451 Unavailable For Legal Reasons` (замерено
+      # probe.yml). Архив data.binance.vision отвечает 200 и отдаёт те же
+      # фьючерсные свечи, отставая примерно на сутки. Для ночного скрина на
+      # пятилетней истории сутки несущественны.
+      #
+      # Прогон НЕ ПАДАЕТ, если архив недоступен: свежесть корпуса проверяет
+      # предполёт, он и решит, можно ли считать.
+      - name: Top up corpus from archive
         continue-on-error: true
         env:
           RESEARCHER_HISTORY_DIR: ${{ github.workspace }}/corpus
-        run: npx tsx researcher/collect-candles.ts --source perp --tf 1h,4h --out corpus
+        run: npx tsx researcher/collect-candles.ts --source mirror --tf 1h,4h --out corpus
 
       # Сохранение ОТДЕЛЬНЫМ шагом с if: always() — иначе тупик, в который мы
       # уже попали. `actions/cache` пишет кэш пост-шагом и ТОЛЬКО при успехе
