@@ -6,6 +6,7 @@
 import { join } from "node:path";
 import { corpusCandleSource, runIncubation, type CandleSource } from "./incubate.ts";
 import { ExchangeBlockedError, fetchBinanceKlines } from "./binance.ts";
+import { collectWhaleSnapshot } from "./hlWhales.ts";
 import { writeStatus } from "./statusFile.ts";
 import { DB_PATH, DEFAULT_VAULT_DIR } from "./paths.ts";
 import { assertDataSources, corpusFreshnessVerdict } from "./preflight.ts";
@@ -85,6 +86,24 @@ const source: CandleSource = async (symbol, tf, startSec) => {
     return corpusCandleSource()(symbol, tf, startSec);
   }
 };
+
+// Форвардный архив китов Hyperliquid — ДО инкубации и в собственном try.
+//
+// Порядок не случаен: срез позиций существует только «сейчас», задним числом
+// его не добрать, а инкубация работает по ЗАКРЫТЫМ барам и опоздание на минуту
+// ей безразлично. Но и наоборот: авария чужого API не имеет права стоить
+// инкубатору живого часа — поэтому здесь ловится ВСЁ и ничего не бросается
+// дальше. Пропущенный срез китов теряет один час данных; упавший тик теряет
+// час форварда у каждого кандидата.
+try {
+  const whales = await collectWhaleSnapshot();
+  log(
+    `киты Hyperliquid: ${whales.rows} позиций по ${whales.coins} монетам ` +
+      `(кошельков ${whales.wallets}, сбой у ${whales.walletsFailed})`,
+  );
+} catch (error) {
+  log(`⚠️ срез китов Hyperliquid пропущен: ${error instanceof Error ? error.message : error}`);
+}
 
 const incubation = await runIncubation({ dbPath: DB_PATH, vaultCardsDir: cardsDir, log, source });
 const supervision = await runSupervision({
