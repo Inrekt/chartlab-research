@@ -27,8 +27,14 @@ import {
 import { sampleCandidates, toStrategyConfig, type SignalTf } from "./grammar.ts";
 import { halvingSubset, listUniverse, loadCandles, splitHoldout } from "./corpus.ts";
 import { HALVING_SALT, netRMultiples, perSymbolNets, STAGE_A_SYMBOLS } from "./screen.ts";
-import { MAX_TRADES_CAP } from "./incubate.ts";
-import { sprtDecide } from "./sprt.ts";
+import { MAX_INCUBATION_DAYS } from "./incubate.ts";
+import {
+  dailySigma,
+  expectedAcceptSampleSize,
+  sprtDecide,
+  toDailyObservations,
+  withinDayIcc,
+} from "./sprt.ts";
 
 /** Тот же детерминированный PRNG, что в грамматике (намеренная копия:
  * самопроверка не должна зависеть от внутренностей проверяемого). */
@@ -64,30 +70,82 @@ export interface SprtCalibration {
 }
 
 /**
- * Эмпирические ошибки SPRT при рабочих параметрах. Потоки симуляции длиной
- * MAX_TRADES_CAP — это верхняя граница ДЛИНЫ СИМУЛЯЦИИ, а не боевое усечение:
- * в проде потолок динамический, 3·E[N] (см. incubate.ts).
- * Каждая симуляция — поток нормальных R с μ=0 (ноль) либо μ=μ1 (край).
+ * Эмпирические ошибки SPRT — НА БОЕВОМ ПУТИ, а не на его предшественнике.
+ *
+ * Раньше здесь генерировался поток НЕЗАВИСИМЫХ посделочных наблюдений и
+ * скармливался `sprtDecide` напрямую. Боевой путь с GATE_VERSION=6 другой:
+ * `toDailyObservations → withinDayIcc → dailySigma → sprtDecide` по ДНЕВНЫМ
+ * средним. Ни одна из трёх функций в калибровке не вызывалась, а поток по
+ * построению был i.i.d. — то есть внутридневной корреляции, ради которой
+ * правку и делали, в симуляции физически не существовало.
+ *
+ * Итог: единственная автоматическая проверка ошибок первого и второго рода
+ * инкубатора отчитывалась об исправности прибора, которого больше нет, и
+ * попадала бы в цель при ЛЮБОЙ поломке дневного слоя. Сторож охранял пустую
+ * комнату — и именно поэтому дефекты дневного слоя пришлось искать вручную.
+ *
+ * Теперь поток строится с ДНЕВНОЙ СТРУКТУРОЙ: `perDay` сделок в дне, общий
+ * дневной фактор с весом ρ, идиосинкразия с весом 1−ρ. Дисперсия одной сделки
+ * при этом остаётся ровно σ², то есть параметр «край на сделку» сохраняет
+ * прежний смысл, а меняется только зависимость внутри дня.
  */
 export function calibrateSprt(
   simulations: number,
   mu1: number,
   sigma: number,
   seed: number,
+  /** Внутридневная корреляция и плотность потока — замеренные значения проекта. */
+  opts: { rho?: number; perDay?: number; days?: number } = {},
 ): SprtCalibration {
+  const rho = opts.rho ?? 0.44; // верхняя из замеренных (4ч)
+  const perDay = opts.perDay ?? 2.5;
+  /*
+   * Длина симуляции ЗЕРКАЛИТ боевое усечение, а не берётся из головы.
+   *
+   * Прод обрывает по `3·E[N]` сделок либо по MAX_INCUBATION_DAYS — что
+   * наступит раньше. Если симулировать короче, мощность занижается, и
+   * калибровка отчитается о слабости прибора, которой нет. Первая версия этой
+   * правки так и ошиблась: 150 сделок против 228, разрешённых продом при
+   * δ=0.25, дали «мощность 57%» — цифра описывала мою симуляцию, а не машину.
+   */
+  const tradeCap = Math.ceil(3 * expectedAcceptSampleSize(mu1, sigma));
+  const days = opts.days ?? Math.min(MAX_INCUBATION_DAYS, Math.ceil(tradeCap / perDay));
+
+  /** Поток сделок с дневной структурой: общий фактор дня + идиосинкразия. */
+  const stream = (mu: number, gauss: () => number): { day: number; net: number }[] => {
+    const out: { day: number; net: number }[] = [];
+    for (let d = 0; d < days; d++) {
+      // Дробное perDay даёт разнородный поток (часть дней одиночные) — именно
+      // на нём и вскрылось, что средняя считалась только по многосделочным.
+      const k = Math.max(1, Math.round(perDay + (gauss() > 0 ? 0.5 : -0.5)));
+      const dayFactor = gauss() * Math.sqrt(rho);
+      for (let i = 0; i < k; i++) {
+        if (out.length >= tradeCap) return out; // то же усечение, что в проде
+        out.push({ day: d, net: mu + sigma * (dayFactor + gauss() * Math.sqrt(1 - rho)) });
+      }
+    }
+    return out;
+  };
+
+  /** Тот же порядок вызовов, что в проде (incubate.ts). */
+  const decide = (rows: { day: number; net: number }[]) => {
+    const daily = toDailyObservations(rows);
+    const icc = withinDayIcc(rows);
+    const rhoUsed = icc?.rho ?? 0.45;
+    const meanPerDay = icc?.meanPerDay ?? (daily.length > 0 ? rows.length / daily.length : 1);
+    return sprtDecide(daily.map((o) => o.mean), mu1, dailySigma(sigma, meanPerDay, rhoUsed));
+  };
+
   let falseAccepts = 0;
   let truncatedNull = 0;
   let powerAccepts = 0;
   for (let i = 0; i < simulations; i++) {
-    const gaussNull = gaussianSource(seed * 2 + i);
-    const nullRs = Array.from({ length: MAX_TRADES_CAP }, () => gaussNull() * sigma);
-    const nullVerdict = sprtDecide(nullRs, mu1, sigma);
+    const nullVerdict = decide(stream(0, gaussianSource(seed * 2 + i)));
     if (nullVerdict.decision === "accept") falseAccepts += 1;
     if (nullVerdict.decision === "continue") truncatedNull += 1;
-
-    const gaussEdge = gaussianSource(seed * 2 + i + 1_000_003);
-    const edgeRs = Array.from({ length: MAX_TRADES_CAP }, () => mu1 + gaussEdge() * sigma);
-    if (sprtDecide(edgeRs, mu1, sigma).decision === "accept") powerAccepts += 1;
+    if (decide(stream(mu1, gaussianSource(seed * 2 + i + 1_000_003))).decision === "accept") {
+      powerAccepts += 1;
+    }
   }
   return {
     simulations,
