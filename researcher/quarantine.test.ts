@@ -125,3 +125,48 @@ describe("предпросмотр карантина", () => {
     ledger.close();
   });
 });
+
+describe("карантин снимает ОБА исключения, а не одно", () => {
+  test("после карантина правило проходит и поведенческий дедуп", async () => {
+    /*
+     * Исключений два и они независимы: по id и по ПОВЕДЕНИЮ (правило × корпус).
+     * Карантин был реализован только в первом — и этого достаточно, чтобы вся
+     * операция стала бесполезной: сэмплер отсеял бы те же правила вторым, а
+     * предпросмотр при этом обещал бы освобождение, которого не произойдёт.
+     * Необратимая операция отчиталась бы об успехе, не сделав ничего.
+     *
+     * Прецедент дословно тот же был с неизмеренными испытаниями: первая правка
+     * учла только id, семейство владельца осталось заблокированным, и это
+     * выяснилось лишь следующим прогоном.
+     */
+    const { behavioralExclusionFor, markEpoch } = await import("./epochs.ts");
+    const { behavioralId } = await import("./grammar.ts");
+    const dbPath = freshDb();
+    const ledger = new TrialLedger(dbPath, { now: () => "2026-08-09T21:37:00.000Z" });
+    const specs = sampleCandidates(11, 4, undefined, { tf: "4h" });
+    ledger.registerCandidates(specs);
+    const rows = ledger.byState("CANDIDATE");
+    for (const r of rows) ledger.recordEval(r.candidateId, "halving_16", { trades: 9 });
+    const family = ledger.getTrial(rows[0]!.candidateId)!.setupFamily;
+    ledger.close();
+    // Как в бою: без отметки эпохи-2 записи читаются как эпоха-1, и ТФ
+    // восстанавливается по порядку партий, а не по метке спека.
+    markEpoch(dbPath, () => "2026-08-09T00:00:00.000Z");
+
+    const blockedBefore = behavioralExclusionFor(dbPath, "4h");
+    const someSpec = specs.find((sp) => blockedBefore.has(behavioralId(sp)));
+    expect(someSpec, "хоть одно правило должно быть заблокировано до карантина").toBeDefined();
+
+    const l2 = new TrialLedger(dbPath, { now: () => "2026-08-09T22:00:00.000Z" });
+    l2.quarantineEpoch(family, "2026-08-09", "2026-08-09", "прибор был сломан");
+    l2.close();
+
+    const blockedAfter = behavioralExclusionFor(dbPath, "4h");
+    // Правила семейства под карантином больше не блокируют повтор.
+    const stillBlocked = specs.filter(
+      (sp) => blockedAfter.has(behavioralId(sp)) && !blockedBefore.has(behavioralId(sp)),
+    );
+    expect(stillBlocked).toHaveLength(0);
+    expect(blockedAfter.size).toBeLessThan(blockedBefore.size);
+  });
+});

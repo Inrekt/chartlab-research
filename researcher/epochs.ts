@@ -197,10 +197,31 @@ export function behavioralExclusionFor(dbPath: string, tf: SignalTf): Set<string
      * ПОЛНОЦЕННОЕ измерение (правило не сработало ни разу, это результат), и
      * запись оценки у него есть. Отличается именно неоценённое.
      */
+    /*
+     * КАРАНТИН снимает блокировку и здесь — иначе он не работает вовсе.
+     *
+     * Исключений два, независимых: по id (`resamplableExclusions`) и по
+     * ПОВЕДЕНИЮ (эта функция). Карантин был реализован только в первом, и
+     * этого достаточно, чтобы вся операция стала бесполезной: сэмплер отсеет
+     * те же правила поведенческим дедупом, а `quarantinePreview` при этом
+     * пообещает освобождение, которого не произойдёт. Необратимая операция
+     * отчиталась бы об успехе, не сделав ничего.
+     *
+     * Прецедент дословно тот же: `neverMeasuredIds` пришлось учесть в ОБОИХ
+     * механизмах, и первая правка (только по id) не дала ничего — семейство
+     * владельца осталось заблокированным, и это выяснилось лишь следующим
+     * прогоном.
+     */
     const rows = db
       .prepare(
         `SELECT t.candidate_id, t.spec_json, t.created_at FROM trials t
-          WHERE EXISTS (SELECT 1 FROM evals e WHERE e.candidate_id = t.candidate_id)`,
+          WHERE EXISTS (SELECT 1 FROM evals e WHERE e.candidate_id = t.candidate_id)
+            AND NOT EXISTS (
+              SELECT 1 FROM quarantine q
+               WHERE q.setup_family = t.setup_family
+                 AND t.created_at >= q.from_iso
+                 AND t.created_at <= q.to_iso
+            )`,
       )
       .all() as { candidate_id: string; spec_json: string; created_at: string }[];
     const runTfByBatch = reconstructRunTf(
