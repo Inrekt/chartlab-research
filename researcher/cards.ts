@@ -8,13 +8,11 @@
  */
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { TradeResult } from "../src/core/types/index.ts";
-import { tradeCostInR } from "../src/core/committee/costModel.ts";
 import { SETUPS, type CandidateSpec,
   isLiquidityExit,
 } from "./grammar.ts";
 import { DEFAULT_VAULT_DIR } from "./paths.ts";
-import type { IncubationRow, PaperTradeRow } from "./incubationBook.ts";
+import { netR, type IncubationRow, type PaperTradeRow } from "./incubationBook.ts";
 import { CUSUM_H, CUSUM_K } from "./cusum.ts";
 import { moments } from "./stats.ts";
 
@@ -105,11 +103,11 @@ export function buildCard(input: CardInput): string {
   const { spec, incubation, trades } = input;
   // NET-цифры: Келли на брутто завысил бы размер позиции — карточка обязана
   // считать так же, как считал SPRT при выпуске.
-  const netRs = trades.map(
-    (t) =>
-      t.rMultiple -
-      tradeCostInR({ entryPrice: t.entryPrice, stopPrice: t.stopPrice } as TradeResult),
-  );
+  // Через netR, а не своим расчётом: карточка обязана считать ровно тем же
+  // прибором, что и SPRT при выпуске. Своя копия формулы здесь уже однажды
+  // разошлась с общей — стоп в книге финальный, и восстановленный из двух цен
+  // риск у сделок с безубытком равен нулю.
+  const netRs = trades.map((t) => netR(t));
   const m = moments(netRs);
   const wins = netRs.filter((r) => r > 0).length;
   const sizePct = quarterKellyPct(netRs);

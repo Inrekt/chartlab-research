@@ -139,7 +139,22 @@ export function averageCostInR(trades: TradeResult[], costs: CostAssumptions = a
   let sum = 0;
   let measurable = 0;
   for (const trade of trades) {
-    const riskDistance = Math.abs(trade.entryPrice - trade.stopPrice);
+    /*
+     * Измеримость проверяется ТОЙ ЖЕ величиной, что и сам расчёт.
+     *
+     * Здесь оставалась вторая копия исправленной ошибки: фильтр смотрел на
+     * |entryPrice − stopPrice|, и сделка с переносом стопа в безубыток (где
+     * эта разность ровно ноль) ВЫБРАСЫВАЛАСЬ из средней целиком — при том что
+     * её издержка прекрасно определена через riskBudget.
+     *
+     * Смещение было направленным, а не случайным: выбрасывались как раз
+     * сделки, дошедшие до частичного тейка, а до тейка в R легче доходят
+     * сделки с УЗКИМ стопом, у которых издержка в R максимальна. То есть
+     * средняя занижалась систематически.
+     */
+    const riskDistance = Number.isFinite(trade.riskBudget)
+      ? Math.abs(trade.riskBudget)
+      : Math.abs(trade.entryPrice - trade.stopPrice);
     if (!Number.isFinite(riskDistance) || riskDistance <= 0) continue;
     sum += tradeCostInR(trade, costs);
     measurable += 1;

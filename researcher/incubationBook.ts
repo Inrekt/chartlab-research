@@ -13,6 +13,7 @@
  */
 import { DatabaseSync } from "node:sqlite";
 import type { TradeResult } from "../src/core/types/index.ts";
+import { tradeCostInR } from "../src/core/committee/costModel.ts";
 import type { SignalTf } from "./grammar.ts";
 
 export interface IncubationRow {
@@ -28,12 +29,44 @@ export interface IncubationRow {
   startedAt: string;
 }
 
+/**
+ * Чистый R бумажной сделки: результат минус издержки.
+ *
+ * Живёт здесь, а не в инкубаторе, потому что это функция СТРОКИ КНИГИ, и её
+ * читают трое: решение о выпуске, надзор и карточка выпускника. Пока у
+ * карточки была своя копия формулы, она разошлась с общей — стоп в книге
+ * финальный, и восстановленный из двух цен риск у сделок с переносом в
+ * безубыток равен нулю, то есть карточка считала сделки бесплатными.
+ */
+export function netR(row: PaperTradeRow): number {
+  const pseudo = {
+    entryPrice: row.entryPrice,
+    stopPrice: row.stopPrice,
+    // `null` у записей до появления колонки: у них величины действительно не
+    // было, и запасной путь по двум ценам — единственное, чем они мерились.
+    riskBudget: row.riskBudget ?? Math.abs(row.entryPrice - row.stopPrice),
+  } as TradeResult;
+  return row.rMultiple - tradeCostInR(pseudo);
+}
+
 export interface PaperTradeRow {
   symbol: string;
   direction: "long" | "short";
   entryTime: number;
   entryPrice: number;
   stopPrice: number;
+  /**
+   * Знаменатель R — ширина стопа от первого входа. `null` у записей, сделанных
+   * до появления колонки: подставлять им что-либо задним числом означало бы
+   * подделку, они действительно этого не знали.
+   *
+   * Хранится отдельно от `stopPrice`, потому что стоп МУТИРУЕТ: перенос в
+   * безубыток приравнивает его к средней цене входа, и восстановленный из двух
+   * цен риск обнуляется. Именно так треть сделок семейств с сопровождением
+   * торговала без издержек — на скрине это починено, а здесь, на пути к
+   * выпуску и карточке, дыра оставалась.
+   */
+  riskBudget: number | null;
   rMultiple: number;
   exitTime: number;
 }
@@ -66,6 +99,7 @@ CREATE TABLE IF NOT EXISTS paper_trades (
   exit_time INTEGER NOT NULL,
   exit_price REAL NOT NULL,
   r_multiple REAL NOT NULL,
+  risk_budget REAL,
   bars_held INTEGER NOT NULL,
   recorded_at TEXT NOT NULL,
   UNIQUE(candidate_id, symbol, entry_time)
@@ -92,6 +126,18 @@ export class IncubationBook {
     this.now = opts?.now ?? (() => new Date().toISOString());
     this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec(SCHEMA);
+    /*
+     * Миграция: только ADD COLUMN, как и в журнале испытаний. Старые записи
+     * получают NULL — и это ЧЕСТНО: у них этой величины действительно не было,
+     * а подставить её задним числом нельзя (стоп в БД уже мутировавший, из
+     * него исходный риск не восстановить).
+     */
+    const cols = new Set(
+      this.db.prepare("PRAGMA table_info(paper_trades)").all().map((r) => String(r.name)),
+    );
+    if (!cols.has("risk_budget")) {
+      this.db.exec("ALTER TABLE paper_trades ADD COLUMN risk_budget REAL");
+    }
   }
 
   /** Регистрирует инкубацию; повторный вызов молча игнорируется. */
@@ -137,8 +183,8 @@ export class IncubationBook {
     const stmt = this.db.prepare(
       `INSERT OR IGNORE INTO paper_trades
          (candidate_id, symbol, direction, entry_time, entry_price, stop_price,
-          target_price, exit_time, exit_price, r_multiple, bars_held, recorded_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          target_price, exit_time, exit_price, r_multiple, risk_budget, bars_held, recorded_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     let inserted = 0;
     const at = this.now();
@@ -154,6 +200,7 @@ export class IncubationBook {
         t.exitTime,
         t.exitPrice,
         t.rMultiple,
+        Number.isFinite(t.riskBudget) ? t.riskBudget : null,
         t.barsHeld,
         at,
       );
@@ -166,7 +213,8 @@ export class IncubationBook {
   trades(candidateId: string): PaperTradeRow[] {
     const rows = this.db
       .prepare(
-        `SELECT symbol, direction, entry_time, entry_price, stop_price, r_multiple, exit_time
+        `SELECT symbol, direction, entry_time, entry_price, stop_price, risk_budget,
+                r_multiple, exit_time
          FROM paper_trades WHERE candidate_id = ? ORDER BY exit_time, entry_time`,
       )
       .all(candidateId) as Record<string, unknown>[];
@@ -176,6 +224,7 @@ export class IncubationBook {
       entryTime: r.entry_time as number,
       entryPrice: r.entry_price as number,
       stopPrice: r.stop_price as number,
+      riskBudget: r.risk_budget === null || r.risk_budget === undefined ? null : Number(r.risk_budget),
       rMultiple: r.r_multiple as number,
       exitTime: r.exit_time as number,
     }));

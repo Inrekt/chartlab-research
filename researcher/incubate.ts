@@ -16,15 +16,13 @@
  * Запуск: npx tsx researcher/incubate.ts [--db path]
  */
 import { pathToFileURL } from "node:url";
-import type { TradeResult } from "../src/core/types/index.ts";
 import { DB_PATH } from "./paths.ts";
 import { runBacktest } from "../src/core/backtest/engine.ts";
-import { tradeCostInR } from "../src/core/committee/costModel.ts";
 import { toStrategyConfig, type SignalTf } from "./grammar.ts";
 import { ExchangeBlockedError, fetchBinanceKlines, TF_SECONDS } from "./binance.ts";
 import { loadCandles } from "./corpus.ts";
 import { buildCard, DEFAULT_VAULT_CARDS_DIR, writeCard } from "./cards.ts";
-import { IncubationBook, type PaperTradeRow } from "./incubationBook.ts";
+import { IncubationBook } from "./incubationBook.ts";
 import { TrialLedger } from "./ledger.ts";
 import {
   dailySigma,
@@ -147,10 +145,10 @@ export interface IncubationSummary {
   killed: string[];
 }
 
-export function netR(row: PaperTradeRow): number {
-  const pseudo = { entryPrice: row.entryPrice, stopPrice: row.stopPrice } as TradeResult;
-  return row.rMultiple - tradeCostInR(pseudo);
-}
+// netR переехал в incubationBook.ts — он функция СТРОКИ КНИГИ, и её читают
+// трое: выпуск, надзор и карточка. Реэкспорт, чтобы не ломать вызывающих.
+export { netR } from "./incubationBook.ts";
+import { netR } from "./incubationBook.ts";
 
 /**
  * Догонка одного кандидата по всем его символам: свежие закрытые бары →

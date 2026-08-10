@@ -54,6 +54,9 @@ const paperRow = (t: TradeResult): PaperTradeRow => ({
   entryTime: t.entryTime,
   entryPrice: t.entryPrice,
   stopPrice: t.stopPrice,
+  // Знаменатель R хранится ОТДЕЛЬНО от стопа: стоп мутирует при переносе в
+  // безубыток, и восстановленный из двух цен риск у таких сделок равен нулю.
+  riskBudget: t.riskBudget,
   rMultiple: t.rMultiple,
   exitTime: t.exitTime,
 });
