@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-12T21:56:57.160Z",
+  "generatedAt": "2026-08-12T22:23:56.572Z",
   "run": {
     "durationMin": 1,
     "nextNightUtc": "2026-08-13T21:37:00.000Z",
-    "lastTickUtc": "2026-08-12T21:56:57.160Z"
+    "lastTickUtc": "2026-08-12T22:23:56.572Z"
   },
   "ledger": {
     "trials": 56806,
@@ -35,8 +35,8 @@
       }
     ],
     "corpus": {
-      "newestBar": "2026-08-10T23:00:00.000Z",
-      "ageDays": 1.96,
+      "newestBar": "2026-08-11T23:00:00.000Z",
+      "ageDays": 0.97,
       "laggingSymbols": 3,
       "level": "ok"
     }
