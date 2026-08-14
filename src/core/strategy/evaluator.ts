@@ -1,7 +1,7 @@
 import type { Candle, ConditionAtom, ConditionGroup, IndicatorRef } from "../types";
 import { cachedLiquidityFeatures } from "../liquidations/clusterSeries";
 import { cachedFundingPercentile, FUNDING_PAYOUTS_PER_DAY } from "../funding/fundingSeries";
-import { cachedTakerPercentile, takerImbalance } from "../metrics/metricsSeries";
+import { cachedCrowdTopPercentile, cachedTakerPercentile, takerImbalance } from "../metrics/metricsSeries";
 import {
   adx,
   atr as atrIndicator,
@@ -387,6 +387,16 @@ export class EvaluationContext {
       // Порог симметричен: percentile 90 означает «верхние 10%» для buy и
       // «нижние 10%» для sell — стороны остаются зеркальной парой.
       return atom.direction === "buy" ? rank >= atom.percentile : rank <= 100 - atom.percentile;
+    }
+
+    if (atom.kind === "crowdTopDivergence") {
+      if (!this.symbol) return false;
+      const rank = cachedCrowdTopPercentile(this.candles, this.symbol, atom.windowDays)[index];
+      if (!Number.isFinite(rank)) return false;
+      // Симметрично funding/takerFlow: percentile 90 — «верхние 10%» для
+      // crowdLong (толпа лонгует сильнее крупных) и «нижние 10%» для
+      // crowdShort — зеркальная пара, взаимный контроль стороны.
+      return atom.direction === "crowdLong" ? rank >= atom.percentile : rank <= 100 - atom.percentile;
     }
 
     return false;

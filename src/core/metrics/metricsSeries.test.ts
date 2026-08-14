@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Candle } from "../types";
 import {
   clearMetricsCache,
+  crowdTopDivergence,
+  crowdTopDivergencePercentile,
   setMetricsLoader,
   takerImbalance,
   takerImbalancePercentile,
@@ -19,6 +21,17 @@ function setRatios(symbol: string, hours: Array<[number, number]>): void {
   store.set(symbol, {
     hourStarts: Float64Array.from(hours.map(([h]) => T0 + h * HOUR)),
     takerRatio: Float64Array.from(hours.map(([, r]) => r)),
+  });
+  clearMetricsCache();
+}
+
+/** crowdRatio/topRatio — ratio long/short как у Binance, НЕ доля. */
+function setCrowdTop(symbol: string, hours: Array<[number, number, number]>): void {
+  store.set(symbol, {
+    hourStarts: Float64Array.from(hours.map(([h]) => T0 + h * HOUR)),
+    takerRatio: Float64Array.from(hours.map(() => 1)),
+    globalLsAccounts: Float64Array.from(hours.map(([, crowd]) => crowd)),
+    topLsPositions: Float64Array.from(hours.map(([, , top]) => top)),
   });
   clearMetricsCache();
 }
@@ -120,6 +133,61 @@ describe("процентиль дисбаланса", () => {
     const pct = takerImbalancePercentile(bars(2), "XT", 1);
     expect(Number.isNaN(pct[0])).toBe(true);
     expect(Number.isNaN(pct[1])).toBe(true);
+  });
+});
+
+describe("расхождение толпы и крупных", () => {
+  it("толпа лонгует сильнее крупных → положительное расхождение", () => {
+    // Толпа (аккаунты) ratio=3 → доля лонга 0.75. Крупные (позиции) ratio=1
+    // → доля 0.5. Расхождение 0.25 — толпа более лонгует, чем крупные.
+    setCrowdTop("XT", [[0, 3.0, 1.0], [1, 3.0, 1.0]]);
+    const div = crowdTopDivergence(bars(2), "XT");
+    expect(div[0]).toBeCloseTo(0.25, 9);
+  });
+
+  it("крупные лонгуют сильнее толпы → отрицательное расхождение (зеркало)", () => {
+    setCrowdTop("XT", [[0, 1.0, 3.0], [1, 1.0, 3.0]]);
+    const div = crowdTopDivergence(bars(2), "XT");
+    expect(div[0]).toBeCloseTo(-0.25, 9);
+  });
+
+  it("равное позиционирование — расхождение ровно ноль", () => {
+    setCrowdTop("XT", [[0, 2.0, 2.0], [1, 2.0, 2.0]]);
+    const div = crowdTopDivergence(bars(2), "XT");
+    expect(div[0]).toBeCloseTo(0, 9);
+  });
+
+  it("дырка в источнике — NaN, без интерполяции", () => {
+    setCrowdTop("XT", [
+      [0, 3.0, 1.0],
+      [2, 3.0, 1.0], // час 1 пропущен
+    ]);
+    const div = crowdTopDivergence(bars(3), "XT");
+    expect(div[0]).toBeCloseTo(0.25, 9);
+    expect(Number.isNaN(div[1])).toBe(true);
+  });
+
+  it("символ без метрик — весь ряд NaN, не бросает", () => {
+    const div = crowdTopDivergence(bars(3), "НЕТ");
+    expect([...div].every(Number.isNaN)).toBe(true);
+  });
+
+  it("старая фикстура без globalLsAccounts/topLsPositions — NaN, не падение на undefined", () => {
+    setRatios("XT", [[0, 1.0], [1, 1.0]]); // фикстура из блока takerImbalance, без новых полей
+    const div = crowdTopDivergence(bars(2), "XT");
+    expect(Number.isNaN(div[0])).toBe(true);
+  });
+
+  it("процентиль: экстремальное расхождение попадает в верхний хвост своей истории", () => {
+    const hours: Array<[number, number, number]> = Array.from({ length: 48 }, (_, h) => [
+      h,
+      h === 47 ? 4.0 : 1.0, // толпа резко лонгует на последнем часе
+      1.0,
+    ]);
+    setCrowdTop("XT", hours);
+    const pct = crowdTopDivergencePercentile(bars(48), "XT", 1);
+    expect(pct[47]).toBeCloseTo(((23 + 0.5) / 24) * 100, 6);
+    expect(pct[46]).toBe(50); // плоское окно до всплеска — середина
   });
 });
 
