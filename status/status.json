@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-13T23:52:37.681Z",
+  "generatedAt": "2026-08-14T02:38:43.517Z",
   "run": {
     "durationMin": 1,
     "nextNightUtc": "2026-08-14T21:37:00.000Z",
-    "lastTickUtc": "2026-08-13T23:52:37.681Z"
+    "lastTickUtc": "2026-08-14T02:38:43.517Z"
   },
   "ledger": {
     "trials": 56806,
@@ -17,7 +17,7 @@
     "feeds": [
       {
         "name": "funding",
-        "files": 157,
+        "files": 356,
         "required": 50,
         "ok": true
       },
@@ -36,7 +36,7 @@
     ],
     "corpus": {
       "newestBar": "2026-08-12T23:00:00.000Z",
-      "ageDays": 1.04,
+      "ageDays": 1.15,
       "laggingSymbols": 3,
       "level": "ok"
     }
@@ -44,9 +44,9 @@
   "failure": "⚠️ ПРОСТРАНСТВО ИСЧЕРПАНО: проверять нечего. Пространство гипотез исчерпано: не набрано НИ ОДНОГО кандидата из 2000 запрошенных.",
   "silence": {
     "level": "ok",
-    "hoursSince": 1.472455,
+    "hoursSince": 4.240742777777778,
     "lastNightIso": "2026-08-13T22:24:16.839Z",
-    "message": "Последняя ночь 1.5 ч назад — расписание живо."
+    "message": "Последняя ночь 4.2 ч назад — расписание живо."
   },
   "universes": [
     {
