@@ -40,11 +40,18 @@ export function llrIncrement(x: number, mu1: number, sigma: number): number {
 export function sprtDecide(
   netRMultiples: readonly number[],
   mu1: number,
-  sigma: number,
+  /**
+   * σ наблюдения. Число — одно σ на все (посделочный путь, тесты). Массив —
+   * ПО НАБЛЮДЕНИЮ (дневной путь): у дня с одной сделкой σ_день = σ целиком, у
+   * дня с десятью — меньше, и подставлять им общее σ из m̄ статистически
+   * неверно (см. dailySigmas).
+   */
+  sigma: number | readonly number[],
 ): SprtResult {
   let llr = 0;
   for (let i = 0; i < netRMultiples.length; i++) {
-    llr += llrIncrement(netRMultiples[i], mu1, sigma);
+    const s = typeof sigma === "number" ? sigma : sigma[i]!;
+    llr += llrIncrement(netRMultiples[i], mu1, s);
     if (llr >= SPRT_A) return { llr, decision: "accept", stoppedAt: i + 1, observations: netRMultiples.length };
     if (llr <= SPRT_B) return { llr, decision: "reject", stoppedAt: i + 1, observations: netRMultiples.length };
   }
@@ -171,4 +178,24 @@ export function withinDayIcc(
 export function dailySigma(sigma: number, meanPerDay: number, rho: number): number {
   const m = Math.max(meanPerDay, 1);
   return sigma * Math.sqrt((1 + (m - 1) * rho) / m);
+}
+
+/**
+ * σ КАЖДОГО дневного наблюдения — по ЕГО собственному числу сделок, а не по
+ * среднему m̄ на все дни.
+ *
+ * Одно m̄ занижает σ_день: `f(m) = ρ + (1−ρ)/m` ВЫПУКЛА по m, поэтому по
+ * неравенству Йенсена среднее `f(count)` строго больше `f(m̄)`. Замерено на
+ * реалистичном потоке (Пуассон λ=2–3, усечён ≥1, ρ=0.44): занижение σ_день
+ * 5.1–5.8%, и оно В ПОЛЬЗУ стратегии — LLR-шаги растут, границы Вальда
+ * эффективно сжимаются, ложное принятие уходит выше номинала. День с одной
+ * сделкой несёт σ целиком; усреднять его счёт с десятисделочным ДО подстановки
+ * в σ нельзя. Данные для честного счёта уже есть — `count` в DailyObservation.
+ */
+export function dailySigmas(
+  daily: readonly DailyObservation[],
+  perTradeSigma: number,
+  rho: number,
+): number[] {
+  return daily.map((d) => dailySigma(perTradeSigma, d.count, rho));
 }

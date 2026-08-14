@@ -22,7 +22,7 @@ import { catchUpTrades, ICC_FALLBACK_RHO, netR, type CandleSource } from "./incu
 import { fetchBinanceKlines } from "./binance.ts";
 import { IncubationBook } from "./incubationBook.ts";
 import { moments } from "./stats.ts";
-import { dailySigma, sprtDecide, toDailyObservations, withinDayIcc } from "./sprt.ts";
+import { dailySigmas, sprtDecide, toDailyObservations, withinDayIcc } from "./sprt.ts";
 import { TrialLedger, type TrialRow } from "./ledger.ts";
 
 /** DECAYING без реабилитации дольше этого срока — пенсия. */
@@ -137,15 +137,17 @@ export async function runSupervision(opts: {
      */
     const postRows = rows.filter((r) => r.exitTime > decayAt);
     const netByDay = postRows.map((r) => ({ day: Math.floor(r.exitTime / 86_400), net: netR(r) }));
-    const postDecay = toDailyObservations(netByDay).map((d) => d.mean);
+    const postDailyObs = toDailyObservations(netByDay);
+    const postDecay = postDailyObs.map((d) => d.mean);
     const icc = withinDayIcc(netByDay);
     // Не хватило данных на оценку ρ — берём КОНСЕРВАТИВНУЮ: завышенная ρ даёт
     // больший σ_день, то есть более осторожный тест. Ноль здесь вернул бы ту
     // самую ошибку, от которой правка защищает.
     const rho = icc?.rho ?? ICC_FALLBACK_RHO;
-    const meanPerDay =
-      icc?.meanPerDay ?? (postDecay.length > 0 ? postRows.length / postDecay.length : 1);
-    const sprt = sprtDecide(postDecay, inc.mu1, dailySigma(inc.sigma, meanPerDay, rho));
+    // σ ПО КАЖДОМУ дню (его число сделок), а не одно из m̄: усреднение занижает
+    // σ_день на ~5.6% в пользу стратегии (Йенсен). Реквалификация возобновляет
+    // ручную торговлю — здесь мягкость особенно дорога.
+    const sprt = sprtDecide(postDecay, inc.mu1, dailySigmas(postDailyObs, inc.sigma, rho));
     const decayDays = (nowSec() - decayAt) / 86_400;
     ledger.recordEval(id, "requalification_check", {
       // postDecay — ДНЕВНЫЕ наблюдения (по одному на день после toDailyObservations),

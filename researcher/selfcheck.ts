@@ -29,7 +29,7 @@ import { halvingSubset, listUniverse, loadCandles, splitHoldout } from "./corpus
 import { HALVING_SALT, netRMultiples, perSymbolNets, STAGE_A_SYMBOLS } from "./screen.ts";
 import { MAX_INCUBATION_DAYS } from "./incubate.ts";
 import {
-  dailySigma,
+  dailySigmas,
   expectedAcceptSampleSize,
   sprtDecide,
   toDailyObservations,
@@ -133,7 +133,10 @@ export function calibrateSprt(
     const icc = withinDayIcc(rows);
     const rhoUsed = icc?.rho ?? 0.45;
     const meanPerDay = icc?.meanPerDay ?? (daily.length > 0 ? rows.length / daily.length : 1);
-    return sprtDecide(daily.map((o) => o.mean), mu1, dailySigma(sigma, meanPerDay, rhoUsed));
+    // Боевой путь: σ ПО КАЖДОМУ дню (Йенсен-поправка), не одно из m̄. Стенд
+    // обязан мерить ровно то, что решает выпуск, иначе калибровка врёт.
+    void meanPerDay; // сохранено для параллельного лога, в решение не идёт
+    return sprtDecide(daily.map((o) => o.mean), mu1, dailySigmas(daily, sigma, rhoUsed));
   };
 
   let falseAccepts = 0;

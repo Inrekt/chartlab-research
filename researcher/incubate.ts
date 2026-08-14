@@ -26,6 +26,7 @@ import { IncubationBook } from "./incubationBook.ts";
 import { TrialLedger } from "./ledger.ts";
 import {
   dailySigma,
+  dailySigmas,
   expectedAcceptSampleSize,
   sprtDecide,
   toDailyObservations,
@@ -342,8 +343,10 @@ export async function runIncubation(opts: {
     // значило бы вернуть ту самую ошибку, от которой правка и защищает.
     const rho = icc?.rho ?? ICC_FALLBACK_RHO;
     const meanPerDay = icc?.meanPerDay ?? (daily.length > 0 ? rows.length / daily.length : 1);
-    const sigmaDay = dailySigma(inc.sigma, meanPerDay, rho);
-    const sprt = sprtDecide(daily.map((d) => d.mean), inc.mu1, sigmaDay);
+    // σ ПО КАЖДОМУ дню (его число сделок), а не одно из m̄: усреднение до
+    // подстановки в σ занижает σ_день на 5.6% в пользу стратегии (Йенсен).
+    const sigmaDay = dailySigma(inc.sigma, meanPerDay, rho); // репрезентативное — только для лога
+    const sprt = sprtDecide(daily.map((d) => d.mean), inc.mu1, dailySigmas(daily, inc.sigma, rho));
     const days = (nowSec() - inc.frozenAt) / 86_400;
     summary.checked += 1;
     ledger.recordEval(trial.candidateId, "incubation_check", {
