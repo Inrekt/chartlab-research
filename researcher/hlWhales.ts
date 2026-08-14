@@ -29,6 +29,7 @@
  * файл: будущий анализ обязан иметь возможность это учесть.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -87,6 +88,36 @@ function marketDir(): string {
 
 export function universePath(): string {
   return join(marketDir(), "universe.json");
+}
+
+export function leaderboardPath(day: string): string {
+  return join(marketDir(), "leaderboard", `${day}.json.gz`);
+}
+
+/**
+ * Порог попадания в дневной снимок лидерборда.
+ *
+ * Полный лидерборд — 34 МБ и ~41 тыс. кошельков, писать его ежедневно в git
+ * нельзя. Но резать по боевым порогам вселенной ($5M/$5M) — значит встроить
+ * ошибку выжившего в сам архив: кит, потерявший половину счёта, выпал бы из
+ * снимков РАНЬШЕ, чем его вынесло, и его агония осталась бы незаписанной.
+ * Порог в $1M по ЛЮБОЙ из осей (счёт ИЛИ прибыль за всё время) держит в
+ * кадре и растущих, и умирающих, при размере снимка в сотни килобайт.
+ */
+export const LEADERBOARD_SNAPSHOT_MIN_USD = 1_000_000;
+
+export interface LeaderboardEntry {
+  readonly address: string;
+  readonly accountValue: number;
+  readonly allTimePnl: number;
+  readonly dayPnl: number;
+}
+
+export function snapshotWorthy(row: LeaderboardEntry): boolean {
+  return (
+    row.accountValue >= LEADERBOARD_SNAPSHOT_MIN_USD ||
+    row.allTimePnl >= LEADERBOARD_SNAPSHOT_MIN_USD
+  );
 }
 
 export function positionsPath(day: string): string {
@@ -175,17 +206,34 @@ export function pickUniverse(
     .map((r) => r.address);
 }
 
-async function fetchLeaderboardUniverse(): Promise<string[]> {
+async function fetchLeaderboard(): Promise<LeaderboardEntry[]> {
   const res = await fetch(LEADERBOARD_URL, { signal: AbortSignal.timeout(LEADERBOARD_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`Лидерборд Hyperliquid: HTTP ${res.status}`);
   const raw = (await res.json()) as { leaderboardRows: RawLeaderboardRow[] };
-  return pickUniverse(
-    raw.leaderboardRows.map((row) => ({
-      address: row.ethAddress,
-      accountValue: Number(row.accountValue),
-      allTimePnl: windowPnl(row, "allTime"),
-    })),
-  );
+  return raw.leaderboardRows.map((row) => ({
+    address: row.ethAddress,
+    accountValue: Number(row.accountValue),
+    allTimePnl: windowPnl(row, "allTime"),
+    dayPnl: windowPnl(row, "day"),
+  }));
+}
+
+/**
+ * Дневной снимок лидерборда — лечение ошибки выжившего ВПЕРЁД.
+ *
+ * Историю позиций кошелька можно достать только для адресов, которые известны
+ * СЕГОДНЯ, а известны они из сегодняшнего лидерборда. Кит, которого вынесло в
+ * прошлом году, из него выпал — и любая восстановленная задним числом панель
+ * систематически лишена ровно тех китов, ради которых ликвидационные гипотезы
+ * строятся. Снимок фиксирует состав на дату t; исчезновение кошелька из
+ * будущих снимков — само по себе данные, и другого способа записать его нет.
+ */
+function snapshotLeaderboard(rows: readonly LeaderboardEntry[], nowIso: string): void {
+  const path = leaderboardPath(utcDay(nowIso));
+  if (existsSync(path)) return; // один снимок в день, первый выигрывает
+  const kept = rows.filter(snapshotWorthy);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, gzipSync(JSON.stringify({ takenAt: nowIso, minUsd: LEADERBOARD_SNAPSHOT_MIN_USD, rows: kept })));
 }
 
 async function fetchPositions(address: string): Promise<WhalePosition[]> {
@@ -257,7 +305,9 @@ async function ensureUniverse(nowIso: string): Promise<UniverseCache> {
   const cached = readUniverse();
   if (!universeIsStale(cached, today)) return cached as UniverseCache;
 
-  const addresses = await fetchLeaderboardUniverse();
+  const rows = await fetchLeaderboard();
+  snapshotLeaderboard(rows, nowIso);
+  const addresses = pickUniverse(rows);
   const fresh: UniverseCache = {
     day: today,
     pickedAt: nowIso,

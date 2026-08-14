@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
   CSV_HEADER,
+  LEADERBOARD_SNAPSHOT_MIN_USD,
+  snapshotWorthy,
   MIN_RECORDED_USD,
   UNIVERSE_MIN_ACCOUNT_USD,
   UNIVERSE_MIN_PROFIT_USD,
@@ -105,6 +107,27 @@ describe("вселенная кошельков", () => {
 
   test("день среза берётся по UTC", () => {
     expect(utcDay("2026-08-10T23:59:59.999Z")).toBe("2026-08-10");
+  });
+});
+
+describe("снимок лидерборда", () => {
+  test("порог по ЛЮБОЙ из осей — счёт ИЛИ прибыль", () => {
+    // Резать по боевым порогам вселенной нельзя: кит, потерявший половину
+    // счёта, выпал бы из снимков РАНЬШЕ, чем его вынесло, и агония осталась
+    // бы незаписанной — ошибка выжившего, встроенная в сам архив.
+    const rich = { address: "a", accountValue: 2_000_000, allTimePnl: -5_000_000, dayPnl: 0 };
+    const dying = { address: "b", accountValue: 90_000, allTimePnl: 3_000_000, dayPnl: -800_000 };
+    const dust = { address: "c", accountValue: 50_000, allTimePnl: 10_000, dayPnl: 0 };
+    expect(snapshotWorthy(rich)).toBe(true); // богатый, пусть и убыточный
+    expect(snapshotWorthy(dying)).toBe(true); // почти вынесенный ветеран
+    expect(snapshotWorthy(dust)).toBe(false);
+  });
+
+  test("порог снимка мягче порогов вселенной", () => {
+    // Снимок обязан видеть ШИРЕ, чем боевой отбор: иначе он не фиксирует
+    // тех, кто в вселенную ещё/уже не входит, и терять их — весь смысл.
+    expect(LEADERBOARD_SNAPSHOT_MIN_USD).toBeLessThan(UNIVERSE_MIN_ACCOUNT_USD);
+    expect(LEADERBOARD_SNAPSHOT_MIN_USD).toBeLessThan(UNIVERSE_MIN_PROFIT_USD);
   });
 });
 
