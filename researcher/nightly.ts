@@ -223,6 +223,40 @@ ${[historyLine, ...history].join("\n")}
 `;
 }
 
+/**
+ * Прогон вселенных, устойчивый к исчерпанию ОТДЕЛЬНОЙ вселенной.
+ *
+ * Дефект, который это чинит: `runScreen` бросает `SpaceExhaustedError`, когда в
+ * его вселенной не осталось несемплированных кандидатов. Раньше этот бросок из
+ * первого же ТФ ронял всю ночь — не запускались НИ вторая вселенная (у неё своё
+ * независимое пространство и она могла быть НЕ исчерпана), НИ инкубатор с
+ * надзором, которым новая партия вообще не нужна: они работают с УЖЕ
+ * существующими кандидатами. Исчерпание генератора гипотез не имеет отношения к
+ * форвард-тесту уже отобранных — а связывало их одно нехваченное исключение.
+ *
+ * Здесь исчерпание вселенной ловится и превращается в пометку, а не в конец
+ * ночи. Любая ДРУГАЯ ошибка (баг кода, битые данные) обязана всплыть — её мы
+ * не глотаем.
+ */
+export function runScreensResilient(
+  tfs: readonly SignalTf[],
+  runOne: (tf: SignalTf, index: number) => ScreenSummary,
+  log: (m: string) => void,
+): { screens: ScreenSummary[]; exhaustedTfs: SignalTf[] } {
+  const screens: ScreenSummary[] = [];
+  const exhaustedTfs: SignalTf[] = [];
+  for (let i = 0; i < tfs.length; i++) {
+    try {
+      screens.push(runOne(tfs[i], i));
+    } catch (error) {
+      if (!(error instanceof SpaceExhaustedError)) throw error;
+      exhaustedTfs.push(tfs[i]);
+      log(`⚠️ вселенная ${tfs[i]} исчерпана — продолжаю: ${String(error).split("\n")[0]}`);
+    }
+  }
+  return { screens, exhaustedTfs };
+}
+
 async function main(): Promise<void> {
   // Первым делом, до единого испытания: есть ли вообще источники данных.
   // Ночь без них не даёт «ноль находок», она даёт ноль СДЕЛОК, записанный в
@@ -238,11 +272,17 @@ async function main(): Promise<void> {
   const cardsDir = join(VAULT_DIR, "Карточки");
   const log = (m: string) => console.error(m);
 
-  const screens: ScreenSummary[] = [];
-  for (let i = 0; i < tfs.length; i++) {
-    log(`Ночь ${new Date().toISOString()}: вселенная ${tfs[i]}, партия ${n}, сид ${baseSeed + i}.`);
-    screens.push(runScreen({ tf: tfs[i], n, seed: baseSeed + i, dbPath: DB_PATH, log }));
-  }
+  const { screens, exhaustedTfs } = runScreensResilient(
+    tfs,
+    (tf, i) => {
+      log(`Ночь ${new Date().toISOString()}: вселенная ${tf}, партия ${n}, сид ${baseSeed + i}.`);
+      return runScreen({ tf, n, seed: baseSeed + i, dbPath: DB_PATH, log });
+    },
+    log,
+  );
+  // Инкубатор и надзор идут ВСЕГДА — даже если все вселенные исчерпаны. Их
+  // работа — форвард-тест уже отобранных кандидатов, и к пустой ночной партии
+  // она отношения не имеет. Ровно это раньше и ломалось.
   const incubation = await runIncubation({ dbPath: DB_PATH, vaultCardsDir: cardsDir, log });
   const supervision = await runSupervision({ dbPath: DB_PATH, vaultCardsDir: cardsDir, log });
 
@@ -263,11 +303,19 @@ async function main(): Promise<void> {
     ),
     "utf-8",
   );
+  // Все вселенные исчерпаны — новых гипотез нет. Ночь при этом СОСТОЯЛАСЬ:
+  // инкубатор и надзор отработали. Показываем это владельцу баннером, но НЕ
+  // роняем ночь и НЕ красим её мёртвой — молчание снимается, сторож доволен.
+  const allExhausted = screens.length === 0 && exhaustedTfs.length === tfs.length;
   writeStatus({
     screens,
     incubation,
     supervision,
     durationMin: Math.round((Date.now() - startedAt) / 60_000),
+    failure: allExhausted
+      ? `⚠️ ПРОСТРАНСТВО ИСЧЕРПАНО: новых кандидатов нет (${exhaustedTfs.join("+")}). ` +
+        `Инкубатор и надзор отработали.`
+      : null,
     // Ночь дошла до конца — значит молчания нет, и вчерашняя тревога снимается.
     // Иначе одна пропущенная ночь красила бы панель навсегда, и сторож
     // перестал бы что-либо значить.

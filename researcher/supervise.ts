@@ -148,7 +148,11 @@ export async function runSupervision(opts: {
     const sprt = sprtDecide(postDecay, inc.mu1, dailySigma(inc.sigma, meanPerDay, rho));
     const decayDays = (nowSec() - decayAt) / 86_400;
     ledger.recordEval(id, "requalification_check", {
-      postDecayTrades: postDecay.length,
+      // postDecay — ДНЕВНЫЕ наблюдения (по одному на день после toDailyObservations),
+      // а не сделки: SPRT переведён на дневную сетку из-за корреляции внутри дня.
+      // Раньше поле звалось postDecayTrades и карточка печатала «N сделок» — это
+      // вводило владельца в заблуждение (он видел бы «40 сделок», а это 40 дней).
+      postDecayDays: postDecay.length,
       llr: Number(sprt.llr.toFixed(3)),
       decision: sprt.decision,
       decayDays: Number(decayDays.toFixed(1)),
@@ -159,7 +163,7 @@ export async function runSupervision(opts: {
         ledger.transition(
           id,
           "GRADUATED",
-          `реквалификация: SPRT заново доказал край (llr=${sprt.llr.toFixed(2)}, ${postDecay.length} сделок)`,
+          `реквалификация: SPRT заново доказал край (llr=${sprt.llr.toFixed(2)}, ${postDecay.length} дней)`,
         );
         cardEvent(id, `✅ реквалификация: SPRT заново доказал край — торговлю можно возобновить`);
         summary.requalified.push(id);
