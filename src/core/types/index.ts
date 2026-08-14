@@ -132,7 +132,17 @@ export type ConditionAtom =
    * почасовые futures-метрики; без символа и без данных условие ложно.
    * Пре-регистрация: researcher/docs/atoms-taker-flow-preregistration.md.
    */
-  | { kind: "takerFlow"; direction: "buy" | "sell"; percentile: number; windowDays: number };
+  | { kind: "takerFlow"; direction: "buy" | "sell"; percentile: number; windowDays: number }
+  /**
+   * Расхождение доли лонга толпы (globalLsAccounts, по числу аккаунтов) и
+   * крупных (topLsPositions, по объёму позиций) в верхних (`crowdLong`) или
+   * нижних (`crowdShort`) `100 − percentile` процентах собственной
+   * скользящей истории. `crowdLong` — толпа лонгует сильнее крупных
+   * (сценарий владельца: розницу должно вынести). Требует символа в
+   * контексте; без него или без данных источника условие честно ложно.
+   * Пре-регистрация: researcher/docs/family-crowd-top-divergence-preregistration.md.
+   */
+  | { kind: "crowdTopDivergence"; direction: "crowdLong" | "crowdShort"; percentile: number; windowDays: number };
 
 export interface ConditionGroup {
   operator: "AND" | "OR";
