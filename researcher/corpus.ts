@@ -14,6 +14,7 @@ import { gunzipSync } from "node:zlib";
 import type { Candle } from "../src/core/types/index.ts";
 import { useCsvFunding } from "./fundingCsv.ts";
 import { useCsvMetrics } from "./metricsCsv.ts";
+import { useCsvFlow } from "./flowCsv.ts";
 import type { SignalTf } from "./grammar.ts";
 
 // Через корпус проходит ЛЮБОЙ исследовательский вход, поэтому источник ставок
@@ -22,6 +23,7 @@ import type { SignalTf } from "./grammar.ts";
 // сделки, не сломав при этом ни одного теста.
 useCsvFunding();
 useCsvMetrics();
+useCsvFlow();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 /**

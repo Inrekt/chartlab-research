@@ -2,6 +2,7 @@ import type { Candle, ConditionAtom, ConditionGroup, IndicatorRef } from "../typ
 import { cachedLiquidityFeatures } from "../liquidations/clusterSeries";
 import { cachedFundingPercentile, FUNDING_PAYOUTS_PER_DAY } from "../funding/fundingSeries";
 import { cachedCrowdTopPercentile, cachedTakerPercentile, takerImbalance } from "../metrics/metricsSeries";
+import { cachedForcedFlowSeries } from "../flow/flowSeries";
 import {
   adx,
   atr as atrIndicator,
@@ -397,6 +398,20 @@ export class EvaluationContext {
       // crowdLong (толпа лонгует сильнее крупных) и «нижние 10%» для
       // crowdShort — зеркальная пара, взаимный контроль стороны.
       return atom.direction === "crowdLong" ? rank >= atom.percentile : rank <= 100 - atom.percentile;
+    }
+    if (atom.kind === "forcedFlow") {
+      if (!this.symbol) return false;
+      const series = cachedForcedFlowSeries(this.candles, this.symbol);
+      const sellFrac = series.sellFrac[index];
+      const oiChg = series.oiChg[index];
+      // Оба ряда обязаны быть известны: дыра в потоке ИЛИ в OI = нет сигнала,
+      // а не молчаливый «false» из-за одной недостающей половины конъюнкции.
+      if (!Number.isFinite(sellFrac) || !Number.isFinite(oiChg)) return false;
+      // Вынос лонгов проверяет долю ПРОДАЖ; вынос шортов — долю ПОКУПОК
+      // (buyFrac = 1 − sellFrac). Обе стороны требуют падения OI: сигнал живёт
+      // только в конъюнкции «односторонний поток ∧ делеверидж».
+      const flowSide = atom.direction === "deleverageLong" ? sellFrac : 1 - sellFrac;
+      return flowSide >= atom.flowThreshold && oiChg <= atom.oiDropThreshold;
     }
 
     return false;

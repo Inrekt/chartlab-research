@@ -142,7 +142,23 @@ export type ConditionAtom =
    * контексте; без него или без данных источника условие честно ложно.
    * Пре-регистрация: researcher/docs/family-crowd-top-divergence-preregistration.md.
    */
-  | { kind: "crowdTopDivergence"; direction: "crowdLong" | "crowdShort"; percentile: number; windowDays: number };
+  | { kind: "crowdTopDivergence"; direction: "crowdLong" | "crowdShort"; percentile: number; windowDays: number }
+  /**
+   * Принудительный поток: конъюнкция односторонний поток ∧ падение открытого
+   * интереса. `deleverageLong` — вынос лонгов (продажи доминируют при падающем
+   * OI), вход на откат вверх; `deleverageShort` — вынос шортов (покупки
+   * доминируют при падающем OI). Пороги ФИКСИРОВАНЫ пре-регистрацией
+   * (flowThreshold 0.62, oiDropThreshold −0.02) и НЕ перебираются: голый поток
+   * усредняет делеверидж и новое позиционирование в ноль — сигнал только в их
+   * совпадении. Пре-регистрация:
+   * researcher/docs/family-forced-flow-preregistration.md.
+   */
+  | {
+      kind: "forcedFlow";
+      direction: "deleverageLong" | "deleverageShort";
+      flowThreshold: number;
+      oiDropThreshold: number;
+    };
 
 export interface ConditionGroup {
   operator: "AND" | "OR";

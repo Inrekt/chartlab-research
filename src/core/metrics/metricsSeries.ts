@@ -27,6 +27,14 @@ export interface MetricsHistory {
    */
   globalLsAccounts?: Float64Array;
   topLsPositions?: Float64Array;
+  /**
+   * Открытый интерес (oi) на начало часа. Опционален по той же причине, что и
+   * поля выше: старые фикстуры его не несут. Нужен семейству «Принудительный
+   * поток»: падение OI отличает делеверидж (закрывают позиции) от нового
+   * позиционирования (открывают). Пре-регистрация:
+   * researcher/docs/family-forced-flow-preregistration.md.
+   */
+  oi?: Float64Array;
 }
 
 export type MetricsLoader = (symbol: string) => MetricsHistory | null;

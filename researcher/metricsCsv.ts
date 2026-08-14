@@ -52,6 +52,7 @@ export function readMetricsCsv(symbol: string): MetricsHistory | null {
   const takerRatio: number[] = [];
   const topLsPositions: number[] = [];
   const globalLsAccounts: number[] = [];
+  const oi: number[] = [];
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
@@ -64,8 +65,10 @@ export function readMetricsCsv(symbol: string): MetricsHistory | null {
     takerRatio.push(ratio);
     const top = Number(cols[4]); // topLsPositions
     const crowd = Number(cols[5]); // globalLsAccounts
+    const openInterest = Number(cols[1]); // oi
     topLsPositions.push(Number.isFinite(top) ? top : NaN);
     globalLsAccounts.push(Number.isFinite(crowd) ? crowd : NaN);
+    oi.push(Number.isFinite(openInterest) ? openInterest : NaN);
   }
 
   if (hourStarts.length === 0) return null;
@@ -74,6 +77,7 @@ export function readMetricsCsv(symbol: string): MetricsHistory | null {
     takerRatio: Float64Array.from(takerRatio),
     topLsPositions: Float64Array.from(topLsPositions),
     globalLsAccounts: Float64Array.from(globalLsAccounts),
+    oi: Float64Array.from(oi),
   };
 }
 
