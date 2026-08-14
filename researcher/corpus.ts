@@ -36,8 +36,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * Журнал испытаний невосполним и потому хранится; корпус восполним и потому
  * кэшируется. Разные вещи — разное обращение.
  */
+/**
+ * Дефолт — ПЕРП-корпус. Спотовый каталог public/data/history оставлен в
+ * истории как артефакт эпохи-1, но дефолтом быть не может: после подмены
+ * корпуса (эпоха-2) любой процесс без явного RESEARCHER_HISTORY_DIR молча
+ * мерил бы другой рынок. Ровно так ежедневный сборщик до 2026-08-14 собирал
+ * метрики для 170 спотовых символов из 362 перповых.
+ */
 export const HISTORY_DIR =
-  process.env.RESEARCHER_HISTORY_DIR ?? join(__dirname, "..", "public", "data", "history");
+  process.env.RESEARCHER_HISTORY_DIR ?? join(__dirname, "..", "public", "data", "history-perp");
 
 /** Доля вселенной, уходящая в отложенный набор (holdout). */
 export const HOLDOUT_FRACTION = 5; // каждый пятый ≈ 20%

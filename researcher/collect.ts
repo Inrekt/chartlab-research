@@ -25,9 +25,46 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, appendFileS
 import { gzipSync } from "node:zlib";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { readdirSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
 import { listUniverse } from "./corpus.ts";
+import { mergeRows, parseKlinesCsv, readSeries, writeSeries } from "./backfill-flow.ts";
 
 const VISION = "https://data.binance.vision/data/futures/um/daily/metrics";
+const VISION_KLINES = "https://data.binance.vision/data/futures/um/daily/klines";
+
+/**
+ * Вселенная ежедневного сбора — из СНИМКА БИРЖИ, а не из корпуса свечей.
+ *
+ * Почему не listUniverse: в облаке этот джоб не имеет корпуса (тот не в git,
+ * а в кэше ночного джоба), и listUniverse молча возвращал каталог СТАРОГО
+ * спотового корпуса из code-репо — 170 символов. Так ежедневные метрики
+ * годами покрывали половину рынка: у 156 из 362 символов перп-корпуса есть
+ * metrics-1h, у остальных — ничего. Снимок exchangeInfo мы пишем сами
+ * (collect-events exchange-snapshot), в нём ~526 живых USDT-перпов.
+ *
+ * Берётся НОВЕЙШИЙ доступный снимок независимо от возраста: состав биржи
+ * меняется на единицы символов в неделю, а устаревший список на порядок
+ * лучше урезанного. Если снимков нет вовсе — честный откат к listUniverse.
+ */
+export function universeFromExchangeInfo(dir: string): string[] {
+  const snapDir = join(dir, "snapshots", "exchangeInfo");
+  if (!existsSync(snapDir)) return [];
+  const files = readdirSync(snapDir).filter((f) => f.endsWith(".json.gz")).sort();
+  const newest = files.at(-1);
+  if (!newest) return [];
+  try {
+    const raw = JSON.parse(gunzipSync(readFileSync(join(snapDir, newest))).toString("utf8")) as {
+      symbols?: Array<{ symbol: string; status: string; contractType: string; quoteAsset: string }>;
+    };
+    return (raw.symbols ?? [])
+      .filter((s) => s.quoteAsset === "USDT" && s.status === "TRADING" && s.contractType === "PERPETUAL")
+      .map((s) => s.symbol)
+      .sort();
+  } catch {
+    return [];
+  }
+}
 const DERIBIT = "https://www.deribit.com/api/v2/public";
 const FRED_SERIES = [
   "DGS2", "DGS10", "T10Y2Y", "VIXCLS", "DTWEXBGS", "BAMLH0A0HYM2", "DFF", "RRPONTSYD", "WALCL",
@@ -229,6 +266,72 @@ function snapshotUniverse(dir: string, date: string, symbols: string[]): SourceR
   return { source: "universe", ok: true, detail: `символов ${symbols.length}` };
 }
 
+/**
+ * Ежедневный хвост ЧЕСТНОГО потока тейкеров (серия flow-1h).
+ *
+ * История серии заливается разовым backfill-flow.ts из помесячных архивов;
+ * этот сборщик дописывает вчерашний день из СУТОЧНЫХ архивов клайнов — поле
+ * [9] (объём агрессивных покупок). Данные восстановимы, поэтому пропуск дня
+ * не трагедия — следующий запуск месячного бэкфилла догонит. Но свежий хвост
+ * нужен инкубатору и будущим атомам потока, а суточный ZIP — единственный
+ * путь с раннера GitHub (REST отдаёт 451).
+ */
+async function collectFlow(dir: string, date: string, symbols: string[]): Promise<SourceReport> {
+  const outDir = join(dir, "flow-1h");
+  mkdirSync(outDir, { recursive: true });
+  const scratch = join(tmpdir(), `flow-${date}`);
+  mkdirSync(scratch, { recursive: true });
+  let okCount = 0;
+  let missing = 0;
+  let appended = 0;
+  const errors: string[] = [];
+
+  const worker = async (symbol: string) => {
+    const zipPath = join(scratch, `${symbol}.zip`);
+    try {
+      const res = await fetch(`${VISION_KLINES}/${symbol}/1h/${symbol}-1h-${date}.zip`, {
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (res.status === 404) {
+        missing += 1; // молодой листинг/делистинг — не ошибка
+        return;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      writeFileSync(zipPath, Buffer.from(await res.arrayBuffer()));
+      const csv = execFileSync("unzip", ["-p", zipPath], { maxBuffer: 64 * 1024 * 1024 }).toString();
+      const fresh = parseKlinesCsv(csv);
+      const outPath = join(outDir, `${symbol}.csv.gz`);
+      const existing = readSeries(outPath);
+      const merged = mergeRows(existing, fresh);
+      if (merged.length > existing.length) {
+        writeSeries(outPath, merged);
+        appended += merged.length - existing.length;
+      }
+      okCount += 1;
+    } catch (e) {
+      errors.push(`${symbol}: ${(e as Error).message}`);
+    } finally {
+      rmSync(zipPath, { force: true });
+    }
+  };
+
+  const queue = [...symbols];
+  await Promise.all(
+    Array.from({ length: 6 }, async () => {
+      while (queue.length > 0) await worker(queue.pop()!);
+    }),
+  );
+  rmSync(scratch, { recursive: true, force: true });
+
+  return {
+    source: "flow-1h",
+    ok: okCount > 0,
+    detail:
+      `${date}: символов ${okCount}/${symbols.length}, новых строк ${appended}, нет файла ${missing}` +
+      (errors.length > 0 ? `, ошибок ${errors.length} (${errors.slice(0, 3).join("; ")})` : ""),
+  };
+}
+
 async function main(): Promise<void> {
   const dir = process.env.COLLECT_DIR ?? join(process.env.HOME ?? "", ".chartlab", "data-repo", "market");
   const explicit = arg("date", "");
@@ -236,7 +339,14 @@ async function main(): Promise<void> {
   const limit = Number(arg("symbols", "0"));
   mkdirSync(dir, { recursive: true });
 
-  const universe = listUniverse("1h");
+  const fromSnapshot = universeFromExchangeInfo(dir);
+  const universe = fromSnapshot.length > 0 ? fromSnapshot : listUniverse("1h");
+  if (fromSnapshot.length === 0) {
+    console.error(
+      "⚠️ снимка exchangeInfo нет — вселенная из корпуса свечей " +
+        `(${universe.length} символов; в облаке это означает урезанное покрытие)`,
+    );
+  }
   const symbols = limit > 0 ? universe.slice(0, limit) : universe;
 
   // Каждый источник изолирован: собранное сегодня невосстановимо, поэтому
@@ -252,6 +362,9 @@ async function main(): Promise<void> {
     reports.push(
       await guarded(`binance-metrics ${date}`, () => collectBinanceMetrics(dir, date, symbols)),
     );
+  }
+  for (const date of dates) {
+    reports.push(await guarded(`flow-1h ${date}`, () => collectFlow(dir, date, symbols)));
   }
   reports.push(await guarded("deribit", () => collectDeribit(dir, dates.at(-1)!)));
   reports.push(await guarded("fear-greed", () => collectFearGreed(dir)));
