@@ -9,6 +9,7 @@ const emptyIncubation = {
   newTrades: 0,
   graduated: [],
   killed: [],
+  errored: 0,
 };
 const emptySupervision = {
   supervised: 0,

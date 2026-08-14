@@ -353,6 +353,7 @@ const EMPTY_INCUBATION: IncubationSummary = {
   newTrades: 0,
   graduated: [],
   killed: [],
+  errored: 0,
 };
 const EMPTY_SUPERVISION: SupervisionSummary = {
   supervised: 0,

@@ -46,6 +46,7 @@ const emptyIncubation = {
   newTrades: 0,
   graduated: [] as string[],
   killed: [] as string[],
+  errored: 0,
 };
 const emptySupervision = {
   supervised: 0,

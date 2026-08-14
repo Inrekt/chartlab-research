@@ -144,6 +144,8 @@ export interface IncubationSummary {
   newTrades: number;
   graduated: string[];
   killed: string[];
+  /** Кандидаты, обработка которых упала и была изолирована (не тихо проглочена). */
+  errored: number;
 }
 
 // netR переехал в incubationBook.ts — он функция СТРОКИ КНИГИ, и её читают
@@ -228,6 +230,7 @@ export async function runIncubation(opts: {
   const summary: IncubationSummary = {
     seeded: 0,
     rejectedAtEntry: 0,
+    errored: 0,
     checked: 0,
     newTrades: 0,
     graduated: [],
@@ -236,189 +239,209 @@ export async function runIncubation(opts: {
 
   // ── 1. Посев ──────────────────────────────────────────────────────────────
   for (const trial of ledger.byState("VALIDATED")) {
-    const seed = ledger.evalsFor(trial.candidateId, "incubation_seed").at(-1);
-    if (!seed) {
-      log(`  ${trial.candidateId}: нет incubation_seed — пропуск (старый формат скрина)`);
-      continue;
-    }
-    const netExpectancy = Number(seed.metrics.netExpectancy);
-    const seedSigma = Number(seed.metrics.sigma);
-    /**
-     * NaN-щит на ОБА числа посева. Любое сравнение с NaN ложно, поэтому
-     * порог пропускал такого кандидата; дальше book.start() падал на
-     * NOT NULL, INSERT OR IGNORE глотал ошибку, а переход в INCUBATING всё
-     * равно происходил. Получался бессмертный призрак: на каждом часовом
-     * тике `if (!inc) continue` срабатывал ДО проверок усечения, так что его
-     * не мог убить даже календарь (найдено тестами спящих веток 31.07).
-     */
-    if (!Number.isFinite(netExpectancy) || !Number.isFinite(seedSigma)) {
+    try {
+      const seed = ledger.evalsFor(trial.candidateId, "incubation_seed").at(-1);
+      if (!seed) {
+        log(`  ${trial.candidateId}: нет incubation_seed — пропуск (старый формат скрина)`);
+        continue;
+      }
+      const netExpectancy = Number(seed.metrics.netExpectancy);
+      const seedSigma = Number(seed.metrics.sigma);
+      /**
+       * NaN-щит на ОБА числа посева. Любое сравнение с NaN ложно, поэтому
+       * порог пропускал такого кандидата; дальше book.start() падал на
+       * NOT NULL, INSERT OR IGNORE глотал ошибку, а переход в INCUBATING всё
+       * равно происходил. Получался бессмертный призрак: на каждом часовом
+       * тике `if (!inc) continue` срабатывал ДО проверок усечения, так что его
+       * не мог убить даже календарь (найдено тестами спящих веток 31.07).
+       */
+      if (!Number.isFinite(netExpectancy) || !Number.isFinite(seedSigma)) {
+        ledger.transition(
+          trial.candidateId,
+          "REJECTED",
+          `входной порог инкубатора: посев испорчен (netExpectancy=${seed.metrics.netExpectancy}, sigma=${seed.metrics.sigma})`,
+        );
+        summary.rejectedAtEntry += 1;
+        continue;
+      }
+      const sigma = Math.max(seedSigma, SIGMA_FLOOR);
+      const mu1 = netExpectancy / 2; // скептичная половина Бентера
+      /**
+       * v3: порог входа в δ = μ₁/σ, а не в абсолютных R. Старая пара
+       * (0.20R; cap 150) была внутренне противоречива: допускала кандидатов,
+       * которым для решения нужно 475–1027 сделок, и обрывала тест на 150 —
+       * 98–99.7% «усечений» при любой истине. δ ≥ 0.18 ⇔ E[N] ≤ ~150 при
+       * α=0.05, β=0.1 — входной билет согласован с длиной теста.
+       * Пре-регистрация: docs/gates-v3-preregistration.md.
+       */
+      const delta = mu1 / sigma;
+      if (delta < ENTRY_GATE_DELTA) {
+        ledger.transition(
+          trial.candidateId,
+          "REJECTED",
+          `входной порог инкубатора: δ=${delta.toFixed(3)} < ${ENTRY_GATE_DELTA} (μ₁=${mu1.toFixed(3)}R, σ=${sigma.toFixed(2)})`,
+        );
+        summary.rejectedAtEntry += 1;
+        continue;
+      }
+      const expectedN = expectedAcceptSampleSize(mu1, sigma);
+      // Заморозка — время ПЕРЕХОДА в VALIDATED из журнала переходов, а не
+      // updated_at: тот мутирует (например, setClusterKey) и сдвинул бы границу
+      // «что считается форвардом».
+      const validatedAt = ledger
+        .transitionsFor(trial.candidateId)
+        .filter((t) => t.toState === "VALIDATED")
+        .at(-1)?.createdAt;
+      const frozenAt = Math.floor(Date.parse(validatedAt ?? trial.updatedAt) / 1000);
+      // Переход только если книга ДЕЙСТВИТЕЛЬНО завела строку: иначе кандидат
+      // окажется в INCUBATING без записи, а такой на каждом тике отсеивается
+      // строкой `if (!inc) continue` раньше любых проверок усечения.
+      const started = book.start({
+        candidateId: trial.candidateId,
+        tf: String(seed.metrics.tf) as SignalTf,
+        symbols: String(seed.metrics.symbols).split(","),
+        mu1,
+        sigma,
+        expectedN,
+        frozenAt,
+      });
+      if (!started) {
+        log(`  ${trial.candidateId}: книга инкубации не приняла посев — остаётся VALIDATED, повторим`);
+        continue;
+      }
       ledger.transition(
         trial.candidateId,
-        "REJECTED",
-        `входной порог инкубатора: посев испорчен (netExpectancy=${seed.metrics.netExpectancy}, sigma=${seed.metrics.sigma})`,
+        "INCUBATING",
+        `в инкубатор: μ1=${mu1.toFixed(3)}R, σ=${sigma.toFixed(2)}, E[N]≈${Math.round(expectedN)} сделок`,
       );
-      summary.rejectedAtEntry += 1;
-      continue;
+      summary.seeded += 1;
+    } catch (error) {
+      // ИЗОЛЯЦИЯ КАНДИДАТА: один сбойный кандидат не имеет права ронять
+      // инкубацию остальных в этом тике. ExchangeBlockedError — глобальное
+      // состояние (биржа закрыта для ВСЕХ), пробрасываем; любую другую ошибку
+      // логируем, считаем и идём дальше — тихо глотать нельзя.
+      if (error instanceof ExchangeBlockedError) throw error;
+      log(`  ${trial.candidateId}: ошибка обработки — изолирована, остальные не страдают: ${error instanceof Error ? error.message : String(error)}`);
+      summary.errored += 1;
     }
-    const sigma = Math.max(seedSigma, SIGMA_FLOOR);
-    const mu1 = netExpectancy / 2; // скептичная половина Бентера
-    /**
-     * v3: порог входа в δ = μ₁/σ, а не в абсолютных R. Старая пара
-     * (0.20R; cap 150) была внутренне противоречива: допускала кандидатов,
-     * которым для решения нужно 475–1027 сделок, и обрывала тест на 150 —
-     * 98–99.7% «усечений» при любой истине. δ ≥ 0.18 ⇔ E[N] ≤ ~150 при
-     * α=0.05, β=0.1 — входной билет согласован с длиной теста.
-     * Пре-регистрация: docs/gates-v3-preregistration.md.
-     */
-    const delta = mu1 / sigma;
-    if (delta < ENTRY_GATE_DELTA) {
-      ledger.transition(
-        trial.candidateId,
-        "REJECTED",
-        `входной порог инкубатора: δ=${delta.toFixed(3)} < ${ENTRY_GATE_DELTA} (μ₁=${mu1.toFixed(3)}R, σ=${sigma.toFixed(2)})`,
-      );
-      summary.rejectedAtEntry += 1;
-      continue;
-    }
-    const expectedN = expectedAcceptSampleSize(mu1, sigma);
-    // Заморозка — время ПЕРЕХОДА в VALIDATED из журнала переходов, а не
-    // updated_at: тот мутирует (например, setClusterKey) и сдвинул бы границу
-    // «что считается форвардом».
-    const validatedAt = ledger
-      .transitionsFor(trial.candidateId)
-      .filter((t) => t.toState === "VALIDATED")
-      .at(-1)?.createdAt;
-    const frozenAt = Math.floor(Date.parse(validatedAt ?? trial.updatedAt) / 1000);
-    // Переход только если книга ДЕЙСТВИТЕЛЬНО завела строку: иначе кандидат
-    // окажется в INCUBATING без записи, а такой на каждом тике отсеивается
-    // строкой `if (!inc) continue` раньше любых проверок усечения.
-    const started = book.start({
-      candidateId: trial.candidateId,
-      tf: String(seed.metrics.tf) as SignalTf,
-      symbols: String(seed.metrics.symbols).split(","),
-      mu1,
-      sigma,
-      expectedN,
-      frozenAt,
-    });
-    if (!started) {
-      log(`  ${trial.candidateId}: книга инкубации не приняла посев — остаётся VALIDATED, повторим`);
-      continue;
-    }
-    ledger.transition(
-      trial.candidateId,
-      "INCUBATING",
-      `в инкубатор: μ1=${mu1.toFixed(3)}R, σ=${sigma.toFixed(2)}, E[N]≈${Math.round(expectedN)} сделок`,
-    );
-    summary.seeded += 1;
   }
 
   // ── 2–3. Догонка и решение ────────────────────────────────────────────────
   for (const trial of ledger.byState("INCUBATING")) {
     const inc = book.get(trial.candidateId);
     if (!inc) continue;
-    summary.newTrades += await catchUpTrades(
-      book,
-      trial.candidateId,
-      trial.spec,
-      inc,
-      source,
-      nowSec,
-      log,
-    );
-
-    const rows = book.trades(trial.candidateId);
-
-    // SPRT решает по ДНЕВНЫМ наблюдениям, а не по сделкам: сделки не
-    // независимы (холд длиннее интервала входов, внутри дня их двигает общий
-    // рыночный фактор). Замер на 600 симуляциях: наивный посделочный счёт при
-    // измеренной ρ=0.44 даёт ложное принятие 14.5% вместо ≤5.6% — втрое мягче
-    // вывески — и теряет 13 пунктов мощности.
-    // Пре-регистрация: docs/sprt-daily-preregistration.md.
-    const netByDay = rows.map((r) => ({ day: Math.floor(r.exitTime / 86_400), net: netR(r) }));
-    const daily = toDailyObservations(netByDay);
-    const icc = withinDayIcc(netByDay);
-    // Данных на оценку ρ не хватило — берём КОНСЕРВАТИВНУЮ: завышенная ρ даёт
-    // больший σ_день, то есть более осторожный тест. Считать ρ нулём здесь
-    // значило бы вернуть ту самую ошибку, от которой правка и защищает.
-    const rho = icc?.rho ?? ICC_FALLBACK_RHO;
-    const meanPerDay = icc?.meanPerDay ?? (daily.length > 0 ? rows.length / daily.length : 1);
-    // σ ПО КАЖДОМУ дню (его число сделок), а не одно из m̄: усреднение до
-    // подстановки в σ занижает σ_день на 5.6% в пользу стратегии (Йенсен).
-    const sigmaDay = dailySigma(inc.sigma, meanPerDay, rho); // репрезентативное — только для лога
-    const sprt = sprtDecide(daily.map((d) => d.mean), inc.mu1, dailySigmas(daily, inc.sigma, rho));
-    const days = (nowSec() - inc.frozenAt) / 86_400;
-    summary.checked += 1;
-    ledger.recordEval(trial.candidateId, "incubation_check", {
-      trades: rows.length,
-      observationDays: daily.length,
-      rho: Number(rho.toFixed(3)),
-      rhoMeasured: icc !== null,
-      meanPerDay: Number(meanPerDay.toFixed(2)),
-      sigmaDay: Number(sigmaDay.toFixed(4)),
-      llr: Number(sprt.llr.toFixed(3)),
-      decision: sprt.decision,
-      stoppedAt: sprt.stoppedAt,
-      days: Number(days.toFixed(1)),
-    });
-
-    if (sprt.decision === "reject") {
-      ledger.transition(
+    try {
+      summary.newTrades += await catchUpTrades(
+        book,
         trial.candidateId,
-        "KILLED",
-        `SPRT принял H0: llr=${sprt.llr.toFixed(2)} после ${sprt.stoppedAt} дней — край не подтвердился вживую`,
+        trial.spec,
+        inc,
+        source,
+        nowSec,
+        log,
       );
-      summary.killed.push(trial.candidateId);
-      continue;
-    }
-    if (sprt.decision === "accept") {
-      const daysNeeded = MIN_GRADUATION_DAYS[inc.tf];
-      if (rows.length >= MIN_GRADUATION_TRADES && days >= daysNeeded) {
-        const reason = `SPRT принял H1 (llr=${sprt.llr.toFixed(2)}, ${rows.length} сделок, ${Math.round(days)} дней)`;
-        ledger.transition(trial.candidateId, "GRADUATED", reason);
-        summary.graduated.push(trial.candidateId);
-        if (opts.vaultCardsDir) {
-          const path = writeCard(
-            opts.vaultCardsDir,
-            trial.candidateId,
-            buildCard({
-              candidateId: trial.candidateId,
-              spec: trial.spec,
-              incubation: inc,
-              trades: rows,
-              graduationReason: reason,
-              clusterKey: trial.clusterKey,
-              graduatedAt: new Date(nowSec() * 1000).toISOString(),
-            }),
-          );
-          log(`  🎓 карточка выпускника: ${path}`);
-        }
-      } else {
-        log(
-          `  ${trial.candidateId}: SPRT «за», но календарь не выдержан ` +
-            `(${rows.length}/${MIN_GRADUATION_TRADES} сделок, ${Math.round(days)}/${daysNeeded} дней) — ждём`,
+
+      const rows = book.trades(trial.candidateId);
+
+      // SPRT решает по ДНЕВНЫМ наблюдениям, а не по сделкам: сделки не
+      // независимы (холд длиннее интервала входов, внутри дня их двигает общий
+      // рыночный фактор). Замер на 600 симуляциях: наивный посделочный счёт при
+      // измеренной ρ=0.44 даёт ложное принятие 14.5% вместо ≤5.6% — втрое мягче
+      // вывески — и теряет 13 пунктов мощности.
+      // Пре-регистрация: docs/sprt-daily-preregistration.md.
+      const netByDay = rows.map((r) => ({ day: Math.floor(r.exitTime / 86_400), net: netR(r) }));
+      const daily = toDailyObservations(netByDay);
+      const icc = withinDayIcc(netByDay);
+      // Данных на оценку ρ не хватило — берём КОНСЕРВАТИВНУЮ: завышенная ρ даёт
+      // больший σ_день, то есть более осторожный тест. Считать ρ нулём здесь
+      // значило бы вернуть ту самую ошибку, от которой правка и защищает.
+      const rho = icc?.rho ?? ICC_FALLBACK_RHO;
+      const meanPerDay = icc?.meanPerDay ?? (daily.length > 0 ? rows.length / daily.length : 1);
+      // σ ПО КАЖДОМУ дню (его число сделок), а не одно из m̄: усреднение до
+      // подстановки в σ занижает σ_день на 5.6% в пользу стратегии (Йенсен).
+      const sigmaDay = dailySigma(inc.sigma, meanPerDay, rho); // репрезентативное — только для лога
+      const sprt = sprtDecide(daily.map((d) => d.mean), inc.mu1, dailySigmas(daily, inc.sigma, rho));
+      const days = (nowSec() - inc.frozenAt) / 86_400;
+      summary.checked += 1;
+      ledger.recordEval(trial.candidateId, "incubation_check", {
+        trades: rows.length,
+        observationDays: daily.length,
+        rho: Number(rho.toFixed(3)),
+        rhoMeasured: icc !== null,
+        meanPerDay: Number(meanPerDay.toFixed(2)),
+        sigmaDay: Number(sigmaDay.toFixed(4)),
+        llr: Number(sprt.llr.toFixed(3)),
+        decision: sprt.decision,
+        stoppedAt: sprt.stoppedAt,
+        days: Number(days.toFixed(1)),
+      });
+
+      if (sprt.decision === "reject") {
+        ledger.transition(
+          trial.candidateId,
+          "KILLED",
+          `SPRT принял H0: llr=${sprt.llr.toFixed(2)} после ${sprt.stoppedAt} дней — край не подтвердился вживую`,
         );
+        summary.killed.push(trial.candidateId);
+        continue;
       }
-      continue;
-    }
-    // continue: усечение — «не смог решить» тоже решение. v3: потолок —
-    // честные 3×E[N] (вход по δ гарантирует E[N] ≤ ~150, так что жёсткий
-    // MAX_TRADES_CAP больше не обрубает тест на середине).
-    const tradeCap = Math.ceil(3 * inc.expectedN);
-    if (rows.length >= tradeCap) {
-      ledger.transition(
-        trial.candidateId,
-        "KILLED",
-        `усечение: ${rows.length} сделок ≥ ${Math.round(tradeCap)} (3×E[N]) без решения SPRT`,
-      );
-      summary.killed.push(trial.candidateId);
-    } else if (days > MAX_INCUBATION_DAYS) {
-      ledger.transition(
-        trial.candidateId,
-        "KILLED",
-        `усечение: ${Math.round(days)} дней > ${MAX_INCUBATION_DAYS} без решения SPRT`,
-      );
-      summary.killed.push(trial.candidateId);
+      if (sprt.decision === "accept") {
+        const daysNeeded = MIN_GRADUATION_DAYS[inc.tf];
+        if (rows.length >= MIN_GRADUATION_TRADES && days >= daysNeeded) {
+          const reason = `SPRT принял H1 (llr=${sprt.llr.toFixed(2)}, ${rows.length} сделок, ${Math.round(days)} дней)`;
+          ledger.transition(trial.candidateId, "GRADUATED", reason);
+          summary.graduated.push(trial.candidateId);
+          if (opts.vaultCardsDir) {
+            const path = writeCard(
+              opts.vaultCardsDir,
+              trial.candidateId,
+              buildCard({
+                candidateId: trial.candidateId,
+                spec: trial.spec,
+                incubation: inc,
+                trades: rows,
+                graduationReason: reason,
+                clusterKey: trial.clusterKey,
+                graduatedAt: new Date(nowSec() * 1000).toISOString(),
+              }),
+            );
+            log(`  🎓 карточка выпускника: ${path}`);
+          }
+        } else {
+          log(
+            `  ${trial.candidateId}: SPRT «за», но календарь не выдержан ` +
+              `(${rows.length}/${MIN_GRADUATION_TRADES} сделок, ${Math.round(days)}/${daysNeeded} дней) — ждём`,
+          );
+        }
+        continue;
+      }
+      // continue: усечение — «не смог решить» тоже решение. v3: потолок —
+      // честные 3×E[N] (вход по δ гарантирует E[N] ≤ ~150, так что жёсткий
+      // MAX_TRADES_CAP больше не обрубает тест на середине).
+      const tradeCap = Math.ceil(3 * inc.expectedN);
+      if (rows.length >= tradeCap) {
+        ledger.transition(
+          trial.candidateId,
+          "KILLED",
+          `усечение: ${rows.length} сделок ≥ ${Math.round(tradeCap)} (3×E[N]) без решения SPRT`,
+        );
+        summary.killed.push(trial.candidateId);
+      } else if (days > MAX_INCUBATION_DAYS) {
+        ledger.transition(
+          trial.candidateId,
+          "KILLED",
+          `усечение: ${Math.round(days)} дней > ${MAX_INCUBATION_DAYS} без решения SPRT`,
+        );
+        summary.killed.push(trial.candidateId);
+      }
+    } catch (error) {
+      // ИЗОЛЯЦИЯ КАНДИДАТА: один сбойный кандидат не имеет права ронять
+      // инкубацию остальных в этом тике. ExchangeBlockedError — глобальное
+      // состояние (биржа закрыта для ВСЕХ), пробрасываем; любую другую ошибку
+      // логируем, считаем и идём дальше — тихо глотать нельзя.
+      if (error instanceof ExchangeBlockedError) throw error;
+      log(`  ${trial.candidateId}: ошибка обработки — изолирована, остальные не страдают: ${error instanceof Error ? error.message : String(error)}`);
+      summary.errored += 1;
     }
   }
 

@@ -172,6 +172,23 @@ describe("incubation flow on a synthetic market", () => {
     ledger.close();
   });
 
+  test("изоляция кандидата: ExchangeBlockedError из тика ПРОБРАСЫВАЕТСЯ, не глотается", async () => {
+    // Цикл инкубации теперь оборачивает КАЖДОГО кандидата в try/catch, чтобы
+    // один сбойный не ронял инкубацию остальных. Но опасная половина этой
+    // правки — случайно проглотить ГЛОБАЛЬНОЕ состояние: биржа закрыта для
+    // ВСЕХ, и это не «ошибка кандидата», а причина остановить тик. Здесь
+    // проверяется, что ExchangeBlockedError по-прежнему пробивается наружу, а
+    // не тихо оседает в summary.errored — иначе блок юрисдикции выглядел бы как
+    // единичный сбой, и кандидаты копили бы календарь молчания.
+    seedValidated(0.5, new Date((T0 + 1000 * HOUR) * 1000).toISOString());
+    const blocked: CandleSource = () => {
+      throw new ExchangeBlockedError("451 — доступ закрыт по юрисдикции");
+    };
+    await expect(
+      runIncubation({ dbPath, source: blocked, nowSec: () => END }),
+    ).rejects.toThrow(/451|юрисдикц/);
+  });
+
   test("freeze honesty: only bars after VALIDATED count as forward trades", async () => {
     const frozenAt = T0 + 1500 * HOUR; // сигналы есть и до, и после
     seedValidated(0.4, new Date(frozenAt * 1000).toISOString());
