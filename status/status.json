@@ -1,16 +1,17 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-18T21:34:10.862Z",
+  "generatedAt": "2026-08-18T21:56:18.511Z",
   "run": {
     "durationMin": 1,
-    "nextNightUtc": "2026-08-18T21:37:00.000Z",
-    "lastTickUtc": "2026-08-18T21:34:10.862Z"
+    "nextNightUtc": "2026-08-19T21:37:00.000Z",
+    "lastTickUtc": "2026-08-18T21:56:18.511Z"
   },
   "ledger": {
-    "trials": 56806,
-    "clusters": 9670,
+    "trials": 56914,
+    "clusters": 9674,
     "census": {
-      "REJECTED": 56806
+      "CANDIDATE": 104,
+      "REJECTED": 56810
     }
   },
   "sources": {
@@ -35,13 +36,13 @@
       }
     ],
     "corpus": {
-      "newestBar": "2026-08-16T23:00:00.000Z",
-      "ageDays": 1.94,
+      "newestBar": "2026-08-17T23:00:00.000Z",
+      "ageDays": 0.96,
       "laggingSymbols": 3,
       "level": "ok"
     }
   },
-  "failure": "⚠️ ПРОСТРАНСТВО ИСЧЕРПАНО: новых кандидатов нет (1h+4h). Инкубатор и надзор отработали.",
+  "failure": "запрещённый переход REJECTED → REJECTED для fundpress_w30_p95|short|1h|none|s2t3b20",
   "silence": {
     "level": "ok",
     "hoursSince": 23.609230555555555,
@@ -119,6 +120,30 @@
   "incubating": [],
   "graduates": [],
   "recentJournal": [
+    {
+      "at": "2026-08-18T21:56:18.501Z",
+      "state": "REJECTED",
+      "ref": "прочее · 1h · short",
+      "reason": "халвинг-16: матожидание -0.037R ≤ 0 после издержек"
+    },
+    {
+      "at": "2026-08-18T21:56:18.497Z",
+      "state": "REJECTED",
+      "ref": "прочее · 1h · long",
+      "reason": "халвинг-16: матожидание -0.045R ≤ 0 после издержек"
+    },
+    {
+      "at": "2026-08-18T21:56:18.491Z",
+      "state": "REJECTED",
+      "ref": "прочее · 1h · short",
+      "reason": "халвинг-16: матожидание -0.055R ≤ 0 после издержек"
+    },
+    {
+      "at": "2026-08-18T21:56:18.450Z",
+      "state": "REJECTED",
+      "ref": "прочее · 1h · short",
+      "reason": "халвинг-16: матожидание -0.019R ≤ 0 после издержек"
+    },
     {
       "at": "2026-08-09T17:47:01.339Z",
       "state": "REJECTED",
@@ -334,30 +359,6 @@
       "state": "REJECTED",
       "ref": "прочее · 4h · short",
       "reason": "халвинг-16: лишь 5 сделок"
-    },
-    {
-      "at": "2026-08-09T17:46:56.323Z",
-      "state": "REJECTED",
-      "ref": "прочее · 4h · short",
-      "reason": "халвинг-16: лишь 5 сделок"
-    },
-    {
-      "at": "2026-08-09T17:46:56.321Z",
-      "state": "REJECTED",
-      "ref": "прочее · 4h · long",
-      "reason": "халвинг-16: матожидание -0.023R ≤ 0 после издержек"
-    },
-    {
-      "at": "2026-08-09T17:46:56.319Z",
-      "state": "REJECTED",
-      "ref": "прочее · 4h · short",
-      "reason": "халвинг-16: матожидание -0.601R ≤ 0 после издержек"
-    },
-    {
-      "at": "2026-08-09T17:46:56.317Z",
-      "state": "REJECTED",
-      "ref": "прочее · 4h · short",
-      "reason": "халвинг-16: матожидание -0.591R ≤ 0 после издержек"
     }
   ],
   "history": [
