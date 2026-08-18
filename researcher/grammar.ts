@@ -218,6 +218,14 @@ export interface SetupDef {
    */
   fixedRule?: boolean;
   /**
+   * Таймфреймы, на которых правило вообще осмысленно. Отсутствие поля — все.
+   * Нужно там, где смысл условия зависит от длины бара: сессионный уровень на
+   * 4ч баре становится фикцией, потому что бар пересекает границу сессии.
+   * Сэмплер обязан такие пары (сетап, ТФ) пропускать, иначе журнал наполнится
+   * измерениями того, чего правило не описывает.
+   */
+  tfs?: readonly SignalTf[];
+  /**
    * Собственный пул выходов. Нужен там, где полная сетка из 27 комбинаций
    * дала бы правилу слишком много свободы: эффект расписания легко
    * «подтвердить» подбором тейка, если тейков много.
@@ -828,6 +836,111 @@ const RANGE_SWEEP3_SETUPS: readonly SetupDef[] = RANGE_SWEEP_SETUPS.map((v1) => 
   };
 });
 
+/*
+ * ── Сессионный свип ──────────────────────────────────────────────────────────
+ *
+ * Пре-регистрация ЗАМОРОЖЕНА до этого кода:
+ * docs/family-session-sweep-preregistration.md.
+ *
+ * Механизм и его отличие от свипа v1–v3 (правило остановки v3 требует НОВОГО
+ * механизма, а не новой комбинации старых частей): там и уровень, и момент
+ * определялись самой ценой — уровень был экстремумом N баров, момент был
+ * приходом цены к нему. Здесь оба заданы ВНЕШНИМ календарём: уровень — это
+ * граница тихой сессии («за диапазон Азии» стопы ставят по общему правилу, а
+ * не потому, что так показала выборка), момент — открытие громкой сессии,
+ * когда ступенчатый приток участников механически исполняет накопленные стопы.
+ * Календарь под данные не подгоняется, поэтому подогнать тут нечего.
+ *
+ * Единственная варьируемая величина — сжатие тихой сессии в ATR. Всё
+ * остальное фиксировано: границы сессий — биржевые часы, параметры цели взяты
+ * серединами уже исследованных сеток liquidity_magnet, выходы — пул v1.
+ */
+// Единица — ширина сессии, делённая на ATR × √(баров сессии), то есть на ту
+// ширину, какую сделало бы случайное блуждание. 1.0 = «обычная сессия»,
+// меньше единицы = сжатие. Сетка объявлена в этих единицах, а не в чистых
+// ATR: первая редакция сравнивала семичасовой диапазон с одночасовым ATR и
+// давала 1 сигнал на 282 126 баров — правило было невыполнимо по построению.
+// Поправка внесена по ЧАСТОТЕ срабатывания; доходность при этом не
+// смотрелась (см. §9 пре-регистрации).
+const SESSION_SWEEP_COMPRESSION = [0.6, 0.8, 1.0] as const;
+/** Пары «тихая → громкая», часы UTC. Биржевые, не подбираемые. */
+const SESSION_SWEEP_PAIRS = [
+  { name: "asia", quiet: [0, 7], loud: [7, 12] },
+  { name: "london", quiet: [7, 12], loud: [12, 21] },
+] as const;
+
+const sessionSweepId = (pair: string, k: number) =>
+  `sessionsweep_${pair}_k${String(Math.round(k * 10)).padStart(2, "0")}`;
+const SESSION_SWEEP_PARAMS = new Map<string, { pair: string; k: number }>();
+
+const SESSION_SWEEP_SETUPS: readonly SetupDef[] = SESSION_SWEEP_PAIRS.flatMap((pair) =>
+  SESSION_SWEEP_COMPRESSION.map((k) => {
+    const id = sessionSweepId(pair.name, k);
+    SESSION_SWEEP_PARAMS.set(id, { pair: pair.name, k });
+    return {
+      id,
+      family: `session_sweep_${pair.name}`,
+      whoPays:
+        "трейдер, чей защитный стоп стоит за границей тихой сессии: на открытии громкой сессии его " +
+        "выносит рыночным ордером — исполнение принудительное, без права отказа и без выбора цены, " +
+        "тот же движок принуждения, что и в ликвидациях, только спусковой крючок он поставил сам; " +
+        "плюс покупатель пробоя, вошедший в уже снятую ликвидность — над ним пусто, и при развороте " +
+        "он сам становится вынужденным продавцом " +
+        "(пре-регистрация family-session-sweep, заморожена 2026-08-18)",
+      fixedRule: true,
+      // Приор как у свипа v1: механизм назван и внешне обоснован, но семейство
+      // ещё ни разу не проверялось, а обоснование — рассуждение, не замер.
+      prior: 3,
+      // ТОЛЬКО 1ч: на 4ч бар пересекает границу сессии, и «уровень сессии»
+      // становится фикцией — ровно та ошибка ярлыка ТФ, которая в эпоху 1
+      // сжигала треть ночи.
+      tfs: ["1h"] as const,
+      build: (dir: Direction): ConditionAtom[] => {
+        const short = dir === "short";
+        return [
+          // 1. Сжатие: стопы копятся там, где диапазон УЗКИЙ. Широкая тихая
+          //    сессия — это уже движение, скопления за её краем нет.
+          {
+            kind: "comparison",
+            left: {
+              kind: "sessionRange",
+              line: "widthAtr",
+              sessionFromUtc: pair.quiet[0],
+              sessionToUtc: pair.quiet[1],
+            },
+            op: "<=",
+            right: k,
+          },
+          // 2. Вынос за границу тихой сессии. Текущий бар в свой уровень не
+          //    входит (см. sessionRange), иначе пробой невозможен по построению.
+          {
+            kind: "comparison",
+            left: { kind: "close" },
+            op: short ? ">" : "<",
+            right: {
+              kind: "sessionRange",
+              line: short ? "upper" : "lower",
+              sessionFromUtc: pair.quiet[0],
+              sessionToUtc: pair.quiet[1],
+            },
+          },
+          // 3. Момент: только громкое окно. Механизм — приход УЧАСТНИКОВ, а не
+          //    приход цены; вне окна это другое событие.
+          { kind: "time", hourRangeUtc: [pair.loud[0], pair.loud[1]] },
+          // 4. Цель существует — из v1 без изменений и без перебора.
+          {
+            kind: "liquidity",
+            side: short ? "below" : "above",
+            minAtr: RANGE_SWEEP_WINDOW[0],
+            maxAtr: RANGE_SWEEP_WINDOW[1],
+            minWeight: RANGE_SWEEP_MIN_WEIGHT,
+          },
+        ];
+      },
+    } satisfies SetupDef;
+  }),
+);
+
 export const SETUPS: readonly SetupDef[] = [
   ...BASE_SETUPS,
   ...LIQUIDITY_SETUPS,
@@ -836,6 +949,7 @@ export const SETUPS: readonly SetupDef[] = [
   ...RANGE_SWEEP_SETUPS,
   ...RANGE_SWEEP2_SETUPS,
   ...RANGE_SWEEP3_SETUPS,
+  ...SESSION_SWEEP_SETUPS,
 ];
 
 /**
@@ -877,6 +991,18 @@ export function setupNeighbors(setupId: string): string[] {
       .map((d) => RANGE_SWEEP_BARS[i + d])
       .filter((v): v is (typeof RANGE_SWEEP_BARS)[number] => v !== undefined)
       .map((v) => rangeSweep2Id(v, rs2.side));
+  }
+
+  // Соседи сессионного свипа — по единственной варьируемой оси (сжатие),
+  // ВНУТРИ своей пары сессий: плато меряет устойчивость правила, а не прыжок
+  // между азиатским и лондонским механизмами.
+  const sess = SESSION_SWEEP_PARAMS.get(setupId);
+  if (sess) {
+    const i = (SESSION_SWEEP_COMPRESSION as readonly number[]).indexOf(sess.k);
+    return [-1, 1]
+      .map((d) => SESSION_SWEEP_COMPRESSION[i + d])
+      .filter((v): v is (typeof SESSION_SWEEP_COMPRESSION)[number] => v !== undefined)
+      .map((v) => sessionSweepId(sess.pair, v));
   }
 
   const fund = FUND_PARAMS.get(setupId);
@@ -922,7 +1048,15 @@ export function setupNeighbors(setupId: string): string[] {
 export function exitsFor(setupId: string): readonly ExitSpec[] {
   // Свип боковика выходит ПО ЛИКВИДНОСТИ, как и магнит: цель — столб, а не
   // фиксированное R. Общий пул выходов здесь не подошёл бы по смыслу.
-  if (LIQ_PARAMS.has(setupId) || RANGE_SWEEP_PARAMS.has(setupId) || RANGE_SWEEP2_PARAMS.has(setupId) || RANGE_SWEEP3_PARAMS.has(setupId))
+  if (
+    LIQ_PARAMS.has(setupId) ||
+    RANGE_SWEEP_PARAMS.has(setupId) ||
+    RANGE_SWEEP2_PARAMS.has(setupId) ||
+    RANGE_SWEEP3_PARAMS.has(setupId) ||
+    // Сессионный свип выходит по ликвидности тем же пулом, что и v1: в
+    // пре-регистрации записано «сетка выходов v1 байт в байт».
+    SESSION_SWEEP_PARAMS.has(setupId)
+  )
     return LIQUIDITY_EXITS;
   const own = SETUPS.find((s) => s.id === setupId)?.exits;
   return own ?? EXITS;
@@ -1098,11 +1232,15 @@ export function filterCombosFor(setupId: string): readonly (readonly string[])[]
 /** Точный размер закрытого пространства — «каждая попытка исчислима». */
 export function grammarSize(): number {
   // У семейства ликвидности свой набор выходов — считаем по сетапам.
+  // Число ТФ тоже по сетапам: правило, осмысленное только на 1ч, занимает
+  // втрое меньше места, и эта формула обязана совпадать с enumerateAll —
+  // расхождение ловится тестом «grammarSize equals actual enumeration count».
   let total = 0;
   for (const setup of SETUPS) {
-    total += filterCombosFor(setup.id).length * exitsFor(setup.id).length;
+    const tfCount = setup.tfs ? setup.tfs.length : SIGNAL_TFS.length;
+    total += filterCombosFor(setup.id).length * exitsFor(setup.id).length * tfCount;
   }
-  return total * DIRECTIONS.length * SIGNAL_TFS.length;
+  return total * DIRECTIONS.length;
 }
 
 /**
@@ -1114,10 +1252,14 @@ export function grammarSize(): number {
  * неоткуда». Без этого числа исчерпание пространства выглядит в отчёте как
  * обычная маленькая партия, и машина месяцами «работает», ничего не проверяя.
  */
-export function fundableSpaceSize(): number {
+export function fundableSpaceSize(tf?: SignalTf): number {
   let total = 0;
   for (const setup of SETUPS) {
     if (!setup.whoPays) continue;
+    // Сетап, запрещённый на этом ТФ, места в пространстве ЭТОГО ТФ не
+    // занимает. Иначе число врало бы в большую сторону, и исчерпание
+    // вселенной выглядело бы как «ещё есть куда расти».
+    if (tf && setup.tfs && !setup.tfs.includes(tf)) continue;
     total += filterCombosFor(setup.id).length * exitsFor(setup.id).length;
   }
   return total * DIRECTIONS.length;
@@ -1129,6 +1271,10 @@ export function* enumerateAll(): Generator<CandidateSpec> {
     for (const filters of filterCombosFor(setup.id)) {
       for (const direction of DIRECTIONS) {
         for (const timeframe of SIGNAL_TFS) {
+          // Запрет по ТФ действует и здесь: перечисление — источник чисел для
+          // аудита, и если сессионное правило появится в нём на 4ч, счёт
+          // пространства разойдётся с тем, что сэмплер реально может выдать.
+          if (setup.tfs && !setup.tfs.includes(timeframe)) continue;
           for (const exit of exitsFor(setup.id)) {
             yield { setup: setup.id, direction, timeframe, filters, exit };
           }
@@ -1203,7 +1349,11 @@ export function sampleCandidates(
   // этом НЕ сужается (enumerateAll/grammarSize нетронуты): журнал, дедуп и
   // дефляция продолжают считать всё пространство — замораживается только
   // расход НОВОГО бюджета на слепой перебор.
-  const fundable = SETUPS.filter((s) => s.whoPays);
+  // Сетапы, осмысленные только на других ТФ, из пула убираются сразу: иначе
+  // сэмплер тратил бы на них броски и молча недобирал партию.
+  const fundable = SETUPS.filter(
+    (s) => s.whoPays && !(options?.tf && s.tfs && !s.tfs.includes(options.tf)),
+  );
   const totalPrior = fundable.reduce((sum, s) => sum + s.prior, 0);
   const picked: CandidateSpec[] = [];
   const seen = new Set<string>();
@@ -1237,6 +1387,10 @@ export function sampleCandidates(
         return pool[Math.floor(rand() * pool.length)];
       })(),
     };
+    // Второй рубеж на случай, когда ТФ не задан опцией и катится жребием:
+    // без него старый путь (случайный ярлык ТФ) наполнил бы журнал
+    // сессионными правилами на 4ч — измерениями того, чего правило не описывает.
+    if (setup.tfs && !setup.tfs.includes(spec.timeframe)) continue;
     const id = candidateId(spec);
     if (seen.has(id) || exclude?.has(id)) continue;
     if (options?.excludeBehavioral?.has(behavioralId(spec))) continue;
@@ -1248,7 +1402,7 @@ export function sampleCandidates(
     const d = options.diagnostics;
     d.requested = n;
     d.picked = picked.length;
-    d.space = fundableSpaceSize();
+    d.space = fundableSpaceSize(options.tf);
     d.excludedSetSize = (exclude?.size ?? 0) + (options.excludeBehavioral?.size ?? 0);
     d.wastedAttempts = attemptsUsed - picked.length;
     d.attemptsExhausted = attemptsUsed >= maxAttempts && picked.length < n;

@@ -46,7 +46,14 @@ export interface IndicatorRef {
     | "hurst"
     | "realizedVol"
     | "volPercentile"
-    | "zscore";
+    | "zscore"
+    /**
+     * Диапазон торговой сессии текущих суток UTC (окно задаётся полями
+     * sessionFromUtc/sessionToUtc). В отличие от Дончиана уровень определяется
+     * ЧАСАМИ работы рынков, а не самой ценой, и потому не подгоняется под
+     * данные. Пре-регистрация: docs/family-session-sweep-preregistration.md.
+     */
+    | "sessionRange";
   period?: number;
   field?: "open" | "high" | "low" | "close" | "volume";
   /** Sub-series selector for multi-line indicators (e.g. ADX's "plusDI", Ichimoku's "tenkan", каналы: upper/lower/middle). */
@@ -66,7 +73,9 @@ export interface IndicatorRef {
     | "lower"
     | "middle"
     | "signal"
-    | "histogram";
+    | "histogram"
+    /** Только для sessionRange: ширина сессии в единицах ATR (для условия сжатия). */
+    | "widthAtr";
   /** Ширина канала в ATR/σ для keltner/atrChannel (по умолчанию своя у каждого индикатора). */
   mult?: number;
   /** Период ATR для канальных индикаторов, когда он отличается от основного периода. */
@@ -78,6 +87,14 @@ export interface IndicatorRef {
    * построению).
    */
   shift?: number;
+  /**
+   * Окно сессии в часах UTC, [от, до) — только для kind: "sessionRange".
+   * Границы задаются часами работы бирж (Азия 0–7, Лондон 7–12, Нью-Йорк
+   * 12–21) и НЕ перебираются: перебор границ после взгляда на результат
+   * превратил бы внешний календарь в подогнанный параметр.
+   */
+  sessionFromUtc?: number;
+  sessionToUtc?: number;
 }
 
 export type ConditionAtom =

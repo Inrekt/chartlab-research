@@ -489,6 +489,7 @@ export function vwap(candles: Candle[]): IndicatorPoint[] {
 // re-export отсюда, чтобы у evaluator и воркеров была одна точка импорта.
 export { keltner, type KeltnerPoint } from "./keltner";
 export { donchian, type DonchianPoint } from "./donchian";
+export { sessionRange, type SessionRangePoint } from "./sessionRange";
 export { atrChannel, type AtrChannelPoint } from "./atrChannel";
 export { roc, rocSeries } from "./roc";
 export { choppiness } from "./choppiness";

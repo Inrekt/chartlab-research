@@ -23,6 +23,7 @@ import {
   roc,
   rsi,
   sma,
+  sessionRange,
   stochastic,
   superTrend,
   vwap,
@@ -107,6 +108,40 @@ function resolveIndicatorSeries(candles: Candle[], ref: IndicatorRef): (number |
     case "donchian": {
       const result = donchian(candles, ref.period ?? 20);
       return alignByTime(candles, channelLine(result, ref.line));
+    }
+    case "sessionRange": {
+      // Границы обязательны: молчаливый дефолт «0–7» означал бы, что правило
+      // с забытым полем меряет азиатскую сессию, ничем себя не выдавая.
+      if (ref.sessionFromUtc === undefined || ref.sessionToUtc === undefined) {
+        throw new Error("sessionRange требует sessionFromUtc и sessionToUtc");
+      }
+      const result = sessionRange(candles, ref.sessionFromUtc, ref.sessionToUtc);
+      if (ref.line === "widthAtr") {
+        // Ширина в единицах ATR: 200 пунктов для BTC и для мем-коина — разные
+        // события, а в собственной волатильности они сравнимы, и правило
+        // остаётся одним для всей вселенной (тот же довод, что у атома stretch).
+        //
+        // Делитель — ATR × √(баров сессии), а не просто ATR. Причина замерена,
+        // а не выдумана: с делителем ATR правило «ширина ≤ 0.8 ATR» дало 1
+        // сигнал на 282 126 баров пяти мажоров — порог требовал, чтобы
+        // семичасовая сессия уложилась в один часовой бар. У случайного
+        // блуждания ширина растёт как √n, поэтому в этих единицах 1.0 значит
+        // «сессия ровно такая, какой её сделал бы случай», а сжатие — это
+        // строго меньше единицы, одинаково на любой сессии и любом ТФ.
+        const atrByTime = new Map(
+          atrIndicator(candles, ref.atrPeriod ?? 14).map((p) => [p.time, p.value]),
+        );
+        return alignByTime(
+          candles,
+          result.flatMap((p) => {
+            const a = atrByTime.get(p.time);
+            if (a === undefined || a <= 0 || p.bars <= 0) return [];
+            return [{ time: p.time, value: p.width / (a * Math.sqrt(p.bars)) }];
+          }),
+        );
+      }
+      const key = ref.line === "lower" ? "lower" : ref.line === "middle" ? "middle" : "upper";
+      return alignByTime(candles, result.map((p) => ({ time: p.time, value: p[key] })));
     }
     case "atrChannel": {
       const result = atrChannel(candles, ref.period ?? 20, ref.atrPeriod ?? 14, ref.mult ?? 3);
