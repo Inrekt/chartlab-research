@@ -1,0 +1,264 @@
+{
+ "source": "yahoo",
+ "collectedAt": "2026-08-18T14:37:01.774Z",
+ "note": "ИНЕРТЕН для ночного перебора: вселенная объявляется в universe-perp.json, корпус читается из HISTORY_DIR.",
+ "limits": {
+  "hourlyHistoryDays": 730,
+  "spotFxHasNoVolume": true
+ },
+ "symbols": 14,
+ "coverage": [
+  {
+   "symbol": "EURUSD",
+   "tf": "1h",
+   "bars": 17260,
+   "firstIso": "2023-11-01T00:00:00.000Z",
+   "lastIso": "2026-08-18T14:35:53.000Z",
+   "gapRatio": 0.004,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "EURUSD",
+   "tf": "1d",
+   "bars": 5186,
+   "firstIso": "2006-08-17T23:00:00.000Z",
+   "lastIso": "2026-08-18T14:35:53.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "GBPUSD",
+   "tf": "1h",
+   "bars": 17261,
+   "firstIso": "2023-11-01T00:00:00.000Z",
+   "lastIso": "2026-08-18T14:35:53.000Z",
+   "gapRatio": 0.004,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "GBPUSD",
+   "tf": "1d",
+   "bars": 5198,
+   "firstIso": "2006-08-17T23:00:00.000Z",
+   "lastIso": "2026-08-18T14:35:53.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "USDJPY",
+   "tf": "1h",
+   "bars": 17147,
+   "firstIso": "2023-11-01T00:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:35.000Z",
+   "gapRatio": 0.004,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "USDJPY",
+   "tf": "1d",
+   "bars": 5186,
+   "firstIso": "2006-08-17T23:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:36.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "AUDUSD",
+   "tf": "1h",
+   "bars": 17355,
+   "firstIso": "2023-11-01T00:00:00.000Z",
+   "lastIso": "2026-08-18T14:35:53.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "AUDUSD",
+   "tf": "1d",
+   "bars": 5201,
+   "firstIso": "2006-08-17T23:00:00.000Z",
+   "lastIso": "2026-08-18T14:35:53.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "USDCAD",
+   "tf": "1h",
+   "bars": 17361,
+   "firstIso": "2023-11-01T00:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:40.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "USDCAD",
+   "tf": "1d",
+   "bars": 5201,
+   "firstIso": "2006-08-17T23:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:41.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "USDCHF",
+   "tf": "1h",
+   "bars": 17197,
+   "firstIso": "2023-11-01T00:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:43.000Z",
+   "gapRatio": 0.004,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "USDCHF",
+   "tf": "1d",
+   "bars": 5199,
+   "firstIso": "2006-08-17T23:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:43.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "NZDUSD",
+   "tf": "1h",
+   "bars": 17351,
+   "firstIso": "2023-11-01T00:00:00.000Z",
+   "lastIso": "2026-08-18T14:35:53.000Z",
+   "gapRatio": 0.001,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "NZDUSD",
+   "tf": "1d",
+   "bars": 5202,
+   "firstIso": "2006-08-17T23:00:00.000Z",
+   "lastIso": "2026-08-18T14:35:53.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "EURJPY",
+   "tf": "1h",
+   "bars": 17270,
+   "firstIso": "2023-11-01T00:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:46.000Z",
+   "gapRatio": 0.004,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "EURJPY",
+   "tf": "1d",
+   "bars": 5189,
+   "firstIso": "2006-08-17T23:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:48.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "GBPJPY",
+   "tf": "1h",
+   "bars": 17271,
+   "firstIso": "2023-11-01T00:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:48.000Z",
+   "gapRatio": 0.004,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "GBPJPY",
+   "tf": "1d",
+   "bars": 5202,
+   "firstIso": "2006-08-17T23:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:50.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "EURGBP",
+   "tf": "1h",
+   "bars": 17287,
+   "firstIso": "2023-11-01T00:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:51.000Z",
+   "gapRatio": 0.003,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "EURGBP",
+   "tf": "1d",
+   "bars": 5206,
+   "firstIso": "2006-08-17T23:00:00.000Z",
+   "lastIso": "2026-08-18T14:36:52.000Z",
+   "gapRatio": 0,
+   "zeroVolume": true
+  },
+  {
+   "symbol": "XAUUSD_F",
+   "tf": "1h",
+   "bars": 13765,
+   "firstIso": "2024-03-26T04:00:00.000Z",
+   "lastIso": "2026-08-18T14:26:48.000Z",
+   "gapRatio": 0.037,
+   "zeroVolume": false
+  },
+  {
+   "symbol": "XAUUSD_F",
+   "tf": "1d",
+   "bars": 5030,
+   "firstIso": "2006-08-18T04:00:00.000Z",
+   "lastIso": "2026-08-18T04:00:00.000Z",
+   "gapRatio": -0.655,
+   "zeroVolume": false
+  },
+  {
+   "symbol": "XAGUSD_F",
+   "tf": "1h",
+   "bars": 13764,
+   "firstIso": "2024-03-26T04:00:00.000Z",
+   "lastIso": "2026-08-18T14:26:51.000Z",
+   "gapRatio": 0.037,
+   "zeroVolume": false
+  },
+  {
+   "symbol": "XAGUSD_F",
+   "tf": "1d",
+   "bars": 5030,
+   "firstIso": "2006-08-18T04:00:00.000Z",
+   "lastIso": "2026-08-18T04:00:00.000Z",
+   "gapRatio": -0.655,
+   "zeroVolume": false
+  },
+  {
+   "symbol": "NASDAQ_F",
+   "tf": "1h",
+   "bars": 13730,
+   "firstIso": "2024-03-26T04:00:00.000Z",
+   "lastIso": "2026-08-18T14:26:58.000Z",
+   "gapRatio": 0.039,
+   "zeroVolume": false
+  },
+  {
+   "symbol": "NASDAQ_F",
+   "tf": "1d",
+   "bars": 5033,
+   "firstIso": "2006-08-18T04:00:00.000Z",
+   "lastIso": "2026-08-18T04:00:00.000Z",
+   "gapRatio": -0.655,
+   "zeroVolume": false
+  },
+  {
+   "symbol": "SP500_F",
+   "tf": "1h",
+   "bars": 13731,
+   "firstIso": "2024-03-26T04:00:00.000Z",
+   "lastIso": "2026-08-18T14:26:59.000Z",
+   "gapRatio": 0.04,
+   "zeroVolume": false
+  },
+  {
+   "symbol": "SP500_F",
+   "tf": "1d",
+   "bars": 5033,
+   "firstIso": "2006-08-18T04:00:00.000Z",
+   "lastIso": "2026-08-18T04:00:00.000Z",
+   "gapRatio": -0.655,
+   "zeroVolume": false
+  }
+ ]
+}
