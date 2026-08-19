@@ -567,12 +567,79 @@ export class TrialLedger {
    */
   quarantineEpoch(setupFamily: string, fromIso: string, toIso: string, reason: string): number {
     const [from, to] = normalizeWindow(fromIso, toIso);
+    const at = this.now();
     this.db
       .prepare(
         "INSERT INTO quarantine(setup_family, from_iso, to_iso, reason, created_at) VALUES(?,?,?,?,?)",
       )
-      .run(setupFamily, from, to, reason, this.now());
+      .run(setupFamily, from, to, reason, at);
+
+    /*
+     * Испытание, вернувшееся в поиск, обязано вернуться и ПО СОСТОЯНИЮ.
+     *
+     * Дефект, который это чинит (поймала первая же настоящая ночь после
+     * первого в истории карантина, 2026-08-18): карантин снимал испытания с
+     * исключений сэмплера, тот честно выдавал их снова, скрин доходил до
+     * вердикта и падал на `запрещённый переход REJECTED → REJECTED` —
+     * REJECTED терминален. Ночь уходила красной, а комбинации оставались
+     * непроверенными: карантин освобождал их только наполовину.
+     *
+     * История НЕ теряется: прежние eval-записи и переходы остаются на месте
+     * (журнал append-only), возврат фиксируется отдельным переходом с
+     * причиной, а сам факт карантина лежит в своей таблице. Это ровно тот
+     * случай, ради которого карантин и существует: прошлый вердикт вынесен
+     * сломанным прибором и измерением не был.
+     */
+    const affected = this.db
+      .prepare(
+        `SELECT candidate_id, state FROM trials
+          WHERE setup_family = ? AND created_at >= ? AND created_at <= ? AND state != 'CANDIDATE'`,
+      )
+      .all(setupFamily, from, to) as { candidate_id: string; state: TrialState }[];
+    this.returnToPool(affected, `карантин: ${reason}`, at);
     return this.quarantinedIds().size;
+  }
+
+  /**
+   * Починка журнала, где карантин был объявлен СТАРЫМ кодом — до того, как он
+   * научился возвращать состояние. Идемпотентна: испытания, уже вернувшиеся в
+   * пул, не трогает и ничего не пишет.
+   */
+  repairQuarantinedStates(): number {
+    const ids = [...this.quarantinedIds()];
+    if (ids.length === 0) return 0;
+    const stuck = ids
+      .map((id) => ({ id, trial: this.getTrial(id) }))
+      .filter((r) => r.trial && r.trial.state !== "CANDIDATE")
+      .map((r) => ({ candidate_id: r.id, state: r.trial!.state }));
+    this.returnToPool(stuck, "карантин: возврат состояния (починка)", this.now());
+    return stuck.length;
+  }
+
+  /** Возврат испытаний в пул одной транзакцией, с переходом на каждое. */
+  private returnToPool(
+    rows: readonly { candidate_id: string; state: TrialState }[],
+    reason: string,
+    at: string,
+  ): void {
+    if (rows.length === 0) return;
+    this.db.exec("BEGIN");
+    try {
+      for (const row of rows) {
+        this.db
+          .prepare(
+            "INSERT INTO transitions(candidate_id, from_state, to_state, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+          )
+          .run(row.candidate_id, row.state, "CANDIDATE", reason, at);
+        this.db
+          .prepare("UPDATE trials SET state = 'CANDIDATE', updated_at = ? WHERE candidate_id = ?")
+          .run(at, row.candidate_id);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /**

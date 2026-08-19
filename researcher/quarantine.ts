@@ -23,6 +23,19 @@ function arg(name: string, fallback = ""): string {
 async function main(): Promise<void> {
   const ledger = new TrialLedger(process.env.RESEARCHER_DB_PATH ?? DB_PATH);
   try {
+    // Починка журнала, где карантин объявлен до того, как он научился
+    // возвращать состояние. Идемпотентна: без застрявших испытаний молчит.
+    if (process.argv.includes("--repair-states")) {
+      const fixed = ledger.repairQuarantinedStates();
+      console.error(
+        fixed === 0
+          ? "чинить нечего: все испытания под карантином уже в пуле"
+          : `возвращено в пул: ${fixed} испытаний`,
+      );
+      console.log(JSON.stringify({ repaired: fixed }));
+      return;
+    }
+
     if (process.argv.includes("--list")) {
       const rows = ledger.quarantines();
       if (rows.length === 0) console.error("карантинов нет");

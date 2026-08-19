@@ -170,3 +170,61 @@ describe("карантин снимает ОБА исключения, а не �
     expect(blockedAfter.size).toBeLessThan(blockedBefore.size);
   });
 });
+
+describe("возврат состояния (дефект боевой ночи 2026-08-18)", () => {
+  /*
+   * Карантин снимал испытания с исключений сэмплера, но НЕ возвращал их
+   * состояние. Сэмплер честно выдавал их снова, скрин доходил до вердикта и
+   * падал на «запрещённый переход REJECTED → REJECTED»: REJECTED терминален.
+   * Ночь уходила красной, комбинации оставались непроверенными — карантин
+   * освобождал их только наполовину. Поймано первой же настоящей ночью после
+   * первого в истории применения карантина.
+   */
+  const rejectedLedger = () => {
+    const ledger = new TrialLedger(freshDb(), { now: () => "2026-08-09T21:37:00.000Z" });
+    ledger.registerCandidates(sampleCandidates(7, 5, undefined, { tf: "4h" }));
+    const rows = ledger.byState("CANDIDATE");
+    const family = ledger.getTrial(rows[0]!.candidateId)!.setupFamily;
+    const mine = rows.filter((r) => ledger.getTrial(r.candidateId)!.setupFamily === family);
+    for (const r of mine) {
+      ledger.recordEval(r.candidateId, "halving_16", { trades: 0 });
+      ledger.transition(r.candidateId, "REJECTED", "нуль сделок");
+    }
+    return { ledger, family, mine };
+  };
+
+  test("после карантина испытание снова CANDIDATE и его можно прогнать заново", () => {
+    const { ledger, family, mine } = rejectedLedger();
+    ledger.quarantineEpoch(family, "2026-08-09", "2026-08-09", "источник данных отсутствовал");
+
+    for (const r of mine) {
+      expect(ledger.getTrial(r.candidateId)!.state, r.candidateId).toBe("CANDIDATE");
+    }
+    // Главное: повторный вердикт больше не падает.
+    expect(() => ledger.transition(mine[0]!.candidateId, "REJECTED", "перемер")).not.toThrow();
+    ledger.close();
+  });
+
+  test("возврат записан переходом с причиной — история не теряется", () => {
+    const { ledger, family, mine } = rejectedLedger();
+    ledger.quarantineEpoch(family, "2026-08-09", "2026-08-09", "источник данных отсутствовал");
+    const back = ledger
+      .transitionsFor(mine[0]!.candidateId)
+      .filter((t) => t.toState === "CANDIDATE");
+    expect(back).toHaveLength(1);
+    expect(back[0].fromState).toBe("REJECTED");
+    expect(back[0].reason).toMatch(/карантин/);
+    // Прежний вердикт остаётся на месте: журнал append-only.
+    expect(ledger.transitionsFor(mine[0]!.candidateId).some((t) => t.toState === "REJECTED")).toBe(true);
+    ledger.close();
+  });
+
+  test("испытания вне окна карантина состояние НЕ меняют", () => {
+    const { ledger, family, mine } = rejectedLedger();
+    ledger.quarantineEpoch(family, "2026-08-01", "2026-08-02", "чужое окно");
+    for (const r of mine) {
+      expect(ledger.getTrial(r.candidateId)!.state).toBe("REJECTED");
+    }
+    ledger.close();
+  });
+});
