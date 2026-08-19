@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-19T21:41:15.361Z",
+  "generatedAt": "2026-08-19T22:00:48.288Z",
   "run": {
     "durationMin": 1,
     "nextNightUtc": "2026-08-20T21:37:00.000Z",
-    "lastTickUtc": "2026-08-19T21:41:15.361Z"
+    "lastTickUtc": "2026-08-19T22:00:48.288Z"
   },
   "ledger": {
     "trials": 56914,
@@ -36,13 +36,18 @@
     ],
     "corpus": {
       "newestBar": "2026-08-18T23:00:00.000Z",
-      "ageDays": 0.95,
+      "ageDays": 0.96,
       "laggingSymbols": 202,
       "level": "ok"
     }
   },
   "failure": "запрещённый переход REJECTED → REJECTED для fundpress_w90_p95|long|1h|none|s2t1b20",
-  "silence": null,
+  "silence": {
+    "level": "ok",
+    "hoursSince": 0.8393819444444445,
+    "lastNightIso": "2026-08-19T21:10:26.496Z",
+    "message": "Последняя ночь 0.8 ч назад — расписание живо."
+  },
   "universes": [
     {
       "tf": "1h",
