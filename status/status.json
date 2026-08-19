@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-19T20:38:51.061Z",
+  "generatedAt": "2026-08-19T20:54:48.070Z",
   "run": {
     "durationMin": 1,
     "nextNightUtc": "2026-08-19T21:37:00.000Z",
-    "lastTickUtc": "2026-08-19T20:38:51.061Z"
+    "lastTickUtc": "2026-08-19T20:54:48.070Z"
   },
   "ledger": {
     "trials": 56914,
@@ -24,30 +24,30 @@
       },
       {
         "name": "metrics-1h",
-        "files": 156,
+        "files": 312,
         "required": 50,
         "ok": true
       },
       {
         "name": "корпус свечей",
-        "files": 324,
+        "files": 721,
         "required": 100,
         "ok": true
       }
     ],
     "corpus": {
-      "newestBar": "2026-08-17T23:00:00.000Z",
-      "ageDays": 1.9,
+      "newestBar": "2026-08-09T05:00:00.000Z",
+      "ageDays": 10.66,
       "laggingSymbols": 3,
-      "level": "ok"
+      "level": "warn"
     }
   },
   "failure": "запрещённый переход REJECTED → REJECTED для fundpress_w30_p95|short|1h|none|s2t3b20",
   "silence": {
     "level": "warn",
-    "hoursSince": 46.687063611111114,
+    "hoursSince": 46.95289888888889,
     "lastNightIso": "2026-08-17T21:57:37.628Z",
-    "message": "⚠️ ночь пропущена: 46.7 ч с последнего полного прогона (пропущено ночей: 1, последняя 2026-08-17T21:57:37.628Z)."
+    "message": "⚠️ ночь пропущена: 47.0 ч с последнего полного прогона (пропущено ночей: 1, последняя 2026-08-17T21:57:37.628Z)."
   },
   "universes": [
     {
