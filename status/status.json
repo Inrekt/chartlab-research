@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-10-10T10:38:56.269Z",
+  "generatedAt": "2026-10-10T11:39:59.393Z",
   "run": {
     "durationMin": 1,
     "nextNightUtc": "2026-10-10T21:37:00.000Z",
-    "lastTickUtc": "2026-10-10T10:38:56.269Z"
+    "lastTickUtc": "2026-10-10T11:39:59.393Z"
   },
   "ledger": {
     "trials": 56914,
@@ -36,7 +36,7 @@
     ],
     "corpus": {
       "newestBar": "2026-09-24T23:00:00.000Z",
-      "ageDays": 15.49,
+      "ageDays": 15.53,
       "laggingSymbols": 202,
       "level": "fail"
     }
@@ -44,9 +44,9 @@
   "failure": "запрещённый переход REJECTED → REJECTED для fundpress_w30_p90|short|1h|none|s2t1b10",
   "silence": {
     "level": "fail",
-    "hoursSince": 1237.4749316666666,
+    "hoursSince": 1238.492466388889,
     "lastNightIso": "2026-08-19T21:10:26.496Z",
-    "message": "🚨 НОЧЬ НЕ ЗАПУСКАЛАСЬ: 1237.5 ч с последнего полного прогона (пропущено ночей: 51, последняя 2026-08-19T21:10:26.496Z).\nДве ночи подряд — это не сбой раннера, а мёртвое расписание. Проверить: gh run list --workflow='Nightly research'; GitHub отключает расписания молча."
+    "message": "🚨 НОЧЬ НЕ ЗАПУСКАЛАСЬ: 1238.5 ч с последнего полного прогона (пропущено ночей: 51, последняя 2026-08-19T21:10:26.496Z).\nДве ночи подряд — это не сбой раннера, а мёртвое расписание. Проверить: gh run list --workflow='Nightly research'; GitHub отключает расписания молча."
   },
   "universes": [
     {
