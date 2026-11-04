@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-11-04T21:30:53.265Z",
+  "generatedAt": "2026-11-04T21:57:34.683Z",
   "run": {
     "durationMin": 1,
-    "nextNightUtc": "2026-11-04T21:37:00.000Z",
-    "lastTickUtc": "2026-11-04T21:30:53.265Z"
+    "nextNightUtc": "2026-11-05T21:37:00.000Z",
+    "lastTickUtc": "2026-11-04T21:57:34.683Z"
   },
   "ledger": {
     "trials": 56914,
@@ -35,13 +35,13 @@
       }
     ],
     "corpus": {
-      "newestBar": "2026-10-31T23:00:00.000Z",
-      "ageDays": 3.94,
+      "newestBar": "2026-11-03T23:00:00.000Z",
+      "ageDays": 0.96,
       "laggingSymbols": 202,
-      "level": "warn"
+      "level": "ok"
     }
   },
-  "failure": "запрещённый переход REJECTED → REJECTED для fundpress_w90_p90|long|1h|none|s2t2b20",
+  "failure": "запрещённый переход REJECTED → REJECTED для fundpress_w30_p95|short|1h|none|s2t1b40",
   "silence": {
     "level": "fail",
     "hoursSince": 1848.3407652777778,
