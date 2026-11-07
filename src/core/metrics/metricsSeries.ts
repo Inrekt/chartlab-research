@@ -28,7 +28,9 @@ export interface MetricsHistory {
   globalLsAccounts?: Float64Array;
   topLsPositions?: Float64Array;
   /**
-   * Открытый интерес (oi) на начало часа. Опционален по той же причине, что и
+   * Открытый интерес (oi) часа — ПОСЛЕДНИЙ 5-минутный сэмпл внутри часа
+   * (backfill-metrics.aggregateHourly), то есть известен к концу часа, а не к
+   * его началу. Строка с меткой H описывает интервал [H, H+1ч). Опционален по той же причине, что и
    * поля выше: старые фикстуры его не несут. Нужен семейству «Принудительный
    * поток»: падение OI отличает делеверидж (закрывают позиции) от нового
    * позиционирования (открывают). Пре-регистрация:
@@ -116,33 +118,8 @@ export function takerImbalancePercentile(
   symbol: string,
   windowDays: number,
 ): Float64Array {
-  const out = new Float64Array(candles.length).fill(NaN);
-  if (candles.length < 2) return out;
-  const imb = cachedImbalance(candles, symbol);
-  const step = candles[1].time - candles[0].time;
-  const windowBars = Math.max(2, Math.round((windowDays * 86400) / step));
-  const minFinite = Math.ceil(windowBars * 0.9);
-
-  for (let i = windowBars - 1; i < candles.length; i++) {
-    const current = imb[i];
-    if (!Number.isFinite(current)) continue;
-    let finite = 0;
-    let below = 0;
-    let equal = 0;
-    for (let k = i - windowBars + 1; k <= i; k++) {
-      const v = imb[k];
-      if (!Number.isFinite(v)) continue;
-      finite++;
-      if (v < current) below++;
-      else if (v === current) equal++;
-    }
-    if (finite < minFinite) continue;
-    // Средний ранг при равенствах. Наивное «доля ≤ текущего» на ПЛОСКОМ окне
-    // даёт каждому бару ранг 100 — и атом «верхние 10%» горел бы на ряду
-    // вообще без событий. Средний ранг ставит плоское окно на 50.
-    out[i] = ((below + equal / 2) / finite) * 100;
-  }
-  return out;
+  if (candles.length < 2) return new Float64Array(candles.length).fill(NaN);
+  return rollingPercentile(cachedImbalance(candles, symbol), candles, windowDays);
 }
 
 /**
@@ -205,30 +182,8 @@ export function crowdTopDivergencePercentile(
   symbol: string,
   windowDays: number,
 ): Float64Array {
-  const out = new Float64Array(candles.length).fill(NaN);
-  if (candles.length < 2) return out;
-  const div = cachedCrowdTopDivergence(candles, symbol);
-  const step = candles[1].time - candles[0].time;
-  const windowBars = Math.max(2, Math.round((windowDays * 86400) / step));
-  const minFinite = Math.ceil(windowBars * 0.9);
-
-  for (let i = windowBars - 1; i < candles.length; i++) {
-    const current = div[i];
-    if (!Number.isFinite(current)) continue;
-    let finite = 0;
-    let below = 0;
-    let equal = 0;
-    for (let k = i - windowBars + 1; k <= i; k++) {
-      const v = div[k];
-      if (!Number.isFinite(v)) continue;
-      finite++;
-      if (v < current) below++;
-      else if (v === current) equal++;
-    }
-    if (finite < minFinite) continue;
-    out[i] = ((below + equal / 2) / finite) * 100;
-  }
-  return out;
+  if (candles.length < 2) return new Float64Array(candles.length).fill(NaN);
+  return rollingPercentile(cachedCrowdTopDivergence(candles, symbol), candles, windowDays);
 }
 
 function cachedCrowdTopDivergence(candles: readonly Candle[], symbol: string): Float64Array {
@@ -243,6 +198,180 @@ export function cachedCrowdTopPercentile(
 ): Float64Array {
   return remember(candles, `ctdpct:${symbol}:${windowDays}`, () =>
     crowdTopDivergencePercentile(candles, symbol, windowDays),
+  );
+}
+
+/**
+ * Скользящий процентиль ряда со СРЕДНИМ рангом при равенствах. Окно в днях
+ * пересчитывается в бары по шагу свечей; окно с < 90% конечных значений даёт
+ * NaN. Общий для всех атомов метрик — один и тот же ранг, одни и те же
+ * правила дыр, чтобы новый атом не изобретал свою терпимость.
+ */
+function rollingPercentile(
+  values: Float64Array,
+  candles: readonly Candle[],
+  windowDays: number,
+): Float64Array {
+  const out = new Float64Array(candles.length).fill(NaN);
+  if (candles.length < 2) return out;
+  const step = candles[1].time - candles[0].time;
+  const windowBars = Math.max(2, Math.round((windowDays * 86400) / step));
+  const minFinite = Math.ceil(windowBars * 0.9);
+
+  for (let i = windowBars - 1; i < candles.length; i++) {
+    const current = values[i];
+    if (!Number.isFinite(current)) continue;
+    let finite = 0;
+    let below = 0;
+    let equal = 0;
+    for (let k = i - windowBars + 1; k <= i; k++) {
+      const v = values[k];
+      if (!Number.isFinite(v)) continue;
+      finite++;
+      if (v < current) below++;
+      else if (v === current) equal++;
+    }
+    if (finite < minFinite) continue;
+    // Средний ранг при равенствах. Наивное «доля ≤ текущего» на ПЛОСКОМ окне
+    // даёт каждому бару ранг 100 — и атом «верхние 10%» горел бы на ряду
+    // вообще без событий. Средний ранг ставит плоское окно на 50.
+    out[i] = ((below + equal / 2) / finite) * 100;
+  }
+  return out;
+}
+
+/** Часов в баре по шагу свечей (минимум 1). */
+function hoursPerBar(candles: readonly Candle[]): number {
+  return Math.max(1, Math.round((candles[1].time - candles[0].time) / 3600));
+}
+
+/**
+ * Изменение открытого интереса за `bars` баров: d_i = ln(OI_i / OI_{i−bars}).
+ *
+ * OI бара — значение ПОСЛЕДНЕГО часа бара (OI — уровень, а не поток:
+ * усреднение размазало бы событие). Логарифм — ради сравнимости монет, у
+ * каждой свой масштаб контрактов. Считается по `oi` в КОНТРАКТАХ, не по
+ * `oiValue`: долларовый OI падает уже от падения цены, и «падение OI» на нём
+ * было бы тавтологией (замер в DRAFT-family-liquidation-cascade.md §4.4).
+ *
+ * Причинность: часы бара [T, T+шаг) полностью известны на его закрытии; ряд
+ * НИКОГДА не берёт час T+шаг и позже. Дыры: нет хотя бы одного часа бара
+ * (у бара или у бара i−bars) → NaN; бары i и i−bars обязаны отстоять ровно
+ * на `bars` шагов (дыра в свечах не превращается в скачок OI).
+ */
+export function oiLogChange(candles: readonly Candle[], symbol: string, bars: number): Float64Array {
+  const out = new Float64Array(candles.length).fill(NaN);
+  const history = loadMetricsHistory(symbol);
+  if (!history || !history.oi || candles.length < 2 || bars < 1) return out;
+  const { oi } = history;
+
+  const byHour = new Map<number, number>();
+  for (let i = 0; i < history.hourStarts.length; i++) byHour.set(history.hourStarts[i], oi[i]);
+
+  const step = candles[1].time - candles[0].time;
+  const hours = hoursPerBar(candles);
+  const barOi = new Float64Array(candles.length).fill(NaN);
+  for (let i = 0; i < candles.length; i++) {
+    let last = NaN;
+    let ok = true;
+    for (let h = 0; h < hours; h++) {
+      const v = byHour.get(candles[i].time + h * 3600);
+      if (v === undefined || !Number.isFinite(v) || v <= 0) {
+        ok = false;
+        break;
+      }
+      last = v;
+    }
+    if (ok) barOi[i] = last;
+  }
+
+  for (let i = bars; i < candles.length; i++) {
+    if (candles[i].time - candles[i - bars].time !== bars * step) continue;
+    const now = barOi[i];
+    const then = barOi[i - bars];
+    if (!Number.isFinite(now) || !Number.isFinite(then)) continue;
+    out[i] = Math.log(now / then);
+  }
+  return out;
+}
+
+/** Процентиль изменения OI текущего бара в его скользящей истории. */
+export function oiChangePercentile(
+  candles: readonly Candle[],
+  symbol: string,
+  bars: number,
+  windowDays: number,
+): Float64Array {
+  const change = remember(candles, `oichg:${symbol}:${bars}`, () => oiLogChange(candles, symbol, bars));
+  return rollingPercentile(change, candles, windowDays);
+}
+
+/** Кэш процентиля: ряд один на (свечи, символ, горизонт, окно) на всю ночь. */
+export function cachedOiChangePercentile(
+  candles: readonly Candle[],
+  symbol: string,
+  bars: number,
+  windowDays: number,
+): Float64Array {
+  return remember(candles, `oichgpct:${symbol}:${bars}:${windowDays}`, () =>
+    oiChangePercentile(candles, symbol, bars, windowDays),
+  );
+}
+
+/**
+ * Доля лонга топ-трейдеров бара по ОБЪЁМУ позиций (topLsPositions):
+ * mean(ratio)/(mean(ratio)+1) по часам бара ∈ (0, 1). Доля, а не голый ratio
+ * — по той же причине, что у расхождения толпы/крупных: ratio 3 и 1/3
+ * симметричны относительно доли. Причинность и дыры — как у takerImbalance.
+ */
+export function topLongShare(candles: readonly Candle[], symbol: string): Float64Array {
+  const out = new Float64Array(candles.length).fill(NaN);
+  const history = loadMetricsHistory(symbol);
+  if (!history || !history.topLsPositions || candles.length < 2) return out;
+  const { topLsPositions } = history;
+
+  const byHour = new Map<number, number>();
+  for (let i = 0; i < history.hourStarts.length; i++) {
+    byHour.set(history.hourStarts[i], topLsPositions[i]);
+  }
+
+  const hours = hoursPerBar(candles);
+  for (let i = 0; i < candles.length; i++) {
+    let sum = 0;
+    let ok = true;
+    for (let h = 0; h < hours; h++) {
+      const v = byHour.get(candles[i].time + h * 3600);
+      if (v === undefined || !Number.isFinite(v) || v < 0) {
+        ok = false;
+        break;
+      }
+      sum += v;
+    }
+    if (!ok) continue;
+    const mean = sum / hours;
+    out[i] = mean / (mean + 1);
+  }
+  return out;
+}
+
+/** Процентиль доли лонга топ-трейдеров текущего бара в его скользящей истории. */
+export function topLongSharePercentile(
+  candles: readonly Candle[],
+  symbol: string,
+  windowDays: number,
+): Float64Array {
+  const share = remember(candles, `tls:${symbol}`, () => topLongShare(candles, symbol));
+  return rollingPercentile(share, candles, windowDays);
+}
+
+/** Кэш процентиля: ряд один на (свечи, символ, окно) на всю ночь. */
+export function cachedTopLongSharePercentile(
+  candles: readonly Candle[],
+  symbol: string,
+  windowDays: number,
+): Float64Array {
+  return remember(candles, `tlspct:${symbol}:${windowDays}`, () =>
+    topLongSharePercentile(candles, symbol, windowDays),
   );
 }
 

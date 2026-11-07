@@ -1,7 +1,13 @@
 import type { Candle, ConditionAtom, ConditionGroup, IndicatorRef } from "../types";
 import { cachedLiquidityFeatures } from "../liquidations/clusterSeries";
 import { cachedFundingPercentile, FUNDING_PAYOUTS_PER_DAY } from "../funding/fundingSeries";
-import { cachedCrowdTopPercentile, cachedTakerPercentile, takerImbalance } from "../metrics/metricsSeries";
+import {
+  cachedCrowdTopPercentile,
+  cachedOiChangePercentile,
+  cachedTakerPercentile,
+  cachedTopLongSharePercentile,
+  takerImbalance,
+} from "../metrics/metricsSeries";
 import { cachedForcedFlowSeries } from "../flow/flowSeries";
 import {
   adx,
@@ -433,6 +439,20 @@ export class EvaluationContext {
       // crowdLong (толпа лонгует сильнее крупных) и «нижние 10%» для
       // crowdShort — зеркальная пара, взаимный контроль стороны.
       return atom.direction === "crowdLong" ? rank >= atom.percentile : rank <= 100 - atom.percentile;
+    }
+    if (atom.kind === "oiChange") {
+      if (!this.symbol) return false;
+      const rank = cachedOiChangePercentile(this.candles, this.symbol, atom.bars, atom.windowDays)[index];
+      if (!Number.isFinite(rank)) return false;
+      // Симметрично takerFlow: percentile 90 — «верхние 10%» для rise и
+      // «нижние 10%» для drop.
+      return atom.direction === "rise" ? rank >= atom.percentile : rank <= 100 - atom.percentile;
+    }
+    if (atom.kind === "topLongShort") {
+      if (!this.symbol) return false;
+      const rank = cachedTopLongSharePercentile(this.candles, this.symbol, atom.windowDays)[index];
+      if (!Number.isFinite(rank)) return false;
+      return atom.direction === "long" ? rank >= atom.percentile : rank <= 100 - atom.percentile;
     }
     if (atom.kind === "forcedFlow") {
       if (!this.symbol) return false;

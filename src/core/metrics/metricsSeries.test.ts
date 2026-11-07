@@ -4,7 +4,9 @@ import {
   clearMetricsCache,
   crowdTopDivergence,
   crowdTopDivergencePercentile,
+  oiLogChange,
   setMetricsLoader,
+  topLongShare,
   takerImbalance,
   takerImbalancePercentile,
   type MetricsHistory,
@@ -31,6 +33,17 @@ function setCrowdTop(symbol: string, hours: Array<[number, number, number]>): vo
     hourStarts: Float64Array.from(hours.map(([h]) => T0 + h * HOUR)),
     takerRatio: Float64Array.from(hours.map(() => 1)),
     globalLsAccounts: Float64Array.from(hours.map(([, crowd]) => crowd)),
+    topLsPositions: Float64Array.from(hours.map(([, , top]) => top)),
+  });
+  clearMetricsCache();
+}
+
+/** oi — контракты, top — ratio long/short топ-трейдеров по позициям. */
+function setOiTop(symbol: string, hours: Array<[number, number, number]>): void {
+  store.set(symbol, {
+    hourStarts: Float64Array.from(hours.map(([h]) => T0 + h * HOUR)),
+    takerRatio: Float64Array.from(hours.map(() => 1)),
+    oi: Float64Array.from(hours.map(([, oi]) => oi)),
     topLsPositions: Float64Array.from(hours.map(([, , top]) => top)),
   });
   clearMetricsCache();
@@ -273,5 +286,109 @@ describe("CVD-дивергенция", () => {
     expect(() =>
       noSymbol.evaluateAtom({ kind: "divergence", osc: "rsi", direction: "bearish", lookback: 12 }, 12),
     ).not.toThrow();
+  });
+});
+
+describe("изменение OI (кубик oiChange)", () => {
+  it("1h: ln(OI_i / OI_{i−1}) по контрактам", () => {
+    setOiTop("XT", [[0, 100, 1], [1, 90, 1], [2, 99, 1]]);
+    const d = oiLogChange(bars(3), "XT", 1);
+    expect(Number.isNaN(d[0])).toBe(true);
+    expect(d[1]).toBeCloseTo(Math.log(0.9), 12);
+    expect(d[2]).toBeCloseTo(Math.log(1.1), 12);
+  });
+
+  it("4h: OI бара — ПОСЛЕДНИЙ час бара, не среднее", () => {
+    const hours: Array<[number, number, number]> = [
+      [0, 50, 1], [1, 60, 1], [2, 70, 1], [3, 100, 1],
+      [4, 10, 1], [5, 10, 1], [6, 10, 1], [7, 80, 1],
+    ];
+    setOiTop("XT", hours);
+    const d = oiLogChange(bars(2, 4), "XT", 1);
+    expect(d[1]).toBeCloseTo(Math.log(80 / 100), 12);
+  });
+
+  it("нет look-ahead: значение бара не зависит от часов после его закрытия", () => {
+    const full: Array<[number, number, number]> = Array.from({ length: 4 * 30 }, (_, h) => [
+      h,
+      1000 + 37 * Math.sin(h * 1.7) + (h % 11 === 0 ? -120 : 0),
+      1 + 0.5 * Math.cos(h * 0.9),
+    ]);
+    const candles = bars(30, 4);
+    setOiTop("XT", full);
+    const fullOi = oiLogChange(candles, "XT", 2);
+    const fullTop = topLongShare(candles, "XT");
+    const ctxFull = new EvaluationContext(candles, "XT");
+    const atom = { kind: "oiChange", direction: "drop", percentile: 80, windowDays: 2, bars: 2 } as const;
+    const firesFull = candles.map((_, i) => ctxFull.evaluateAtom(atom, i));
+    for (let i = 0; i < candles.length; i++) {
+      // Оставляем только часы, закрывшиеся к закрытию бара i: [0, 4(i+1)).
+      setOiTop("XT", full.filter(([h]) => h < 4 * (i + 1)));
+      const cut = oiLogChange(candles, "XT", 2);
+      const cutTop = topLongShare(candles, "XT");
+      expect(Object.is(cut[i], fullOi[i])).toBe(true);
+      expect(Object.is(cutTop[i], fullTop[i])).toBe(true);
+      expect(new EvaluationContext(candles, "XT").evaluateAtom(atom, i)).toBe(firesFull[i]);
+    }
+  });
+
+  it("дыра в часе бара или в свечах — NaN, без подстановки", () => {
+    setOiTop("XT", [[0, 100, 1], [2, 90, 1], [3, 80, 1]]); // час 1 пропущен
+    const d = oiLogChange(bars(4), "XT", 1);
+    expect(Number.isNaN(d[1])).toBe(true);
+    expect(Number.isNaN(d[2])).toBe(true); // предыдущий бар без OI
+    expect(d[3]).toBeCloseTo(Math.log(80 / 90), 12);
+
+    // Свечи 0, 1, 3 (свечи часа 2 нет), OI есть за все часы: шаг между
+    // свечами 1 и 3 — два часа, это не «1 бар», и скачок не засчитывается.
+    setOiTop("XT", [[0, 100, 1], [1, 100, 1], [2, 100, 1], [3, 50, 1]]);
+    const gapped = [...bars(2), ...bars(1, 1, 3)];
+    const g = oiLogChange(gapped, "XT", 1);
+    expect(g[1]).toBeCloseTo(0, 12);
+    expect(Number.isNaN(g[2])).toBe(true);
+  });
+
+  it("старая фикстура без oi — NaN, не падение", () => {
+    setRatios("XT", [[0, 1], [1, 1]]);
+    expect([...oiLogChange(bars(2), "XT", 1)].every(Number.isNaN)).toBe(true);
+  });
+
+  it("атом: резкое падение OI ловится drop и не ловится rise; без символа — ложь", () => {
+    const hours: Array<[number, number, number]> = Array.from({ length: 48 }, (_, h) => [
+      h,
+      h === 47 ? 800 : 1000,
+      1,
+    ]);
+    setOiTop("XT", hours);
+    const candles = bars(48);
+    const ctx = new EvaluationContext(candles, "XT");
+    const drop = { kind: "oiChange", direction: "drop", percentile: 95, windowDays: 1, bars: 1 } as const;
+    const rise = { ...drop, direction: "rise" } as const;
+    expect(ctx.evaluateAtom(drop, 47)).toBe(true);
+    expect(ctx.evaluateAtom(rise, 47)).toBe(false);
+    expect(ctx.evaluateAtom(drop, 46)).toBe(false); // плоское окно → ранг 50
+    expect(new EvaluationContext(candles).evaluateAtom(drop, 47)).toBe(false);
+  });
+});
+
+describe("доля лонга топ-трейдеров (кубик topLongShort)", () => {
+  it("ratio → доля: 3 → 0.75, среднее по часам бара", () => {
+    setOiTop("XT", [[0, 1, 3], [1, 1, 3], [2, 1, 1], [3, 1, 5]]);
+    const share = topLongShare(bars(2, 2), "XT");
+    expect(share[0]).toBeCloseTo(0.75, 12);
+    expect(share[1]).toBeCloseTo(0.75, 12); // mean(1,5)=3
+  });
+
+  it("атом: всплеск лонга крупных — long да, short нет", () => {
+    const hours: Array<[number, number, number]> = Array.from({ length: 48 }, (_, h) => [
+      h,
+      1000,
+      h === 47 ? 4 : 1,
+    ]);
+    setOiTop("XT", hours);
+    const ctx = new EvaluationContext(bars(48), "XT");
+    const long = { kind: "topLongShort", direction: "long", percentile: 95, windowDays: 1 } as const;
+    expect(ctx.evaluateAtom(long, 47)).toBe(true);
+    expect(ctx.evaluateAtom({ ...long, direction: "short" }, 47)).toBe(false);
   });
 });
