@@ -170,6 +170,22 @@ export type ConditionAtom =
    * совпадении. Пре-регистрация:
    * researcher/docs/family-forced-flow-preregistration.md.
    */
+  /**
+   * Изменение открытого интереса (в КОНТРАКТАХ, не в долларах) за `bars`
+   * баров, ln(OI_i/OI_{i−bars}), в верхних (`rise`) или нижних (`drop`)
+   * `100 − percentile` процентах собственной скользящей истории `windowDays`.
+   * OI бара — последний час бара; ряд видит только закрытые часы. Требует
+   * символа; без него или без данных условие ложно. Кубик без семейства:
+   * механизм каскада проверен и отклонён (family-forced-flow-preregistration.md),
+   * семейство на кубике — только через свою пре-регистрацию.
+   */
+  | { kind: "oiChange"; direction: "rise" | "drop"; percentile: number; windowDays: number; bars: number }
+  /**
+   * Доля лонга топ-трейдеров по объёму позиций (topLsPositions) в верхних
+   * (`long`) или нижних (`short`) `100 − percentile` процентах собственной
+   * скользящей истории. Требует символа; без него или без данных — ложь.
+   */
+  | { kind: "topLongShort"; direction: "long" | "short"; percentile: number; windowDays: number }
   | {
       kind: "forcedFlow";
       direction: "deleverageLong" | "deleverageShort";
