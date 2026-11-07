@@ -153,6 +153,52 @@ CREATE TRIGGER IF NOT EXISTS trials_no_delete BEFORE DELETE ON trials
 BEGIN SELECT RAISE(ABORT, 'trials are never deleted'); END;
 `;
 
+export type HypothesisStatus = "proposed" | "queued" | "rejected";
+
+/** Гипотеза «мозга» до вставки (см. researcher/brain.ts). */
+export interface NewHypothesis {
+  id: string;
+  familyId: string;
+  mechanismId: string;
+  timeframe: string;
+  direction: string;
+  cubes: readonly string[];
+  source: "generator" | "hint";
+  hintText?: string | null;
+  preregJson: string;
+  preregHash: string;
+  adequacy: unknown;
+  status?: HypothesisStatus;
+}
+
+export interface HypothesisRow extends Omit<NewHypothesis, "status" | "cubes"> {
+  cubes: string[];
+  status: HypothesisStatus;
+  night: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function toHypothesisRow(r: Record<string, unknown>): HypothesisRow {
+  return {
+    id: r.id as string,
+    familyId: r.family_id as string,
+    mechanismId: r.mechanism_id as string,
+    timeframe: r.timeframe as string,
+    direction: r.direction as string,
+    cubes: JSON.parse(r.cubes_json as string) as string[],
+    source: r.source as "generator" | "hint",
+    hintText: (r.hint_text as string | null) ?? null,
+    preregJson: r.prereg_json as string,
+    preregHash: r.prereg_hash as string,
+    adequacy: JSON.parse(r.adequacy_json as string) as unknown,
+    status: r.status as HypothesisStatus,
+    night: (r.night as string | null) ?? null,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
 export class TrialLedger {
   private readonly db: DatabaseSync;
   private readonly now: () => string;
@@ -277,9 +323,154 @@ export class TrialLedger {
       BEGIN SELECT RAISE(ABORT, 'owner_trades is append-only'); END;
     `);
 
+    /*
+     * Очередь гипотез «мозга» (v4). Строка — идея «механизм × кубики ×
+     * вселенная» с ПРЕ-РЕГИСТРАЦИЕЙ, записанной в момент постановки: после
+     * вставки ни механизм, ни кубики, ни текст пре-регистрации поменять
+     * нельзя (триггер), меняется только статус и только вперёд.
+     *
+     * ⚠️ Множественность. Предложенная гипотеза (proposed) — ещё не выстрел и
+     * планку не поднимает. Поставленная в прогон (queued) — выстрел: её
+     * family_id входит в F (`familiesTried`), даже если ни одного испытания
+     * ещё нет. Поэтому постановки ограничены лимитом за ночь.
+     */
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS hypotheses (
+        id TEXT PRIMARY KEY,
+        family_id TEXT NOT NULL,
+        mechanism_id TEXT NOT NULL,
+        timeframe TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        cubes_json TEXT NOT NULL,
+        source TEXT NOT NULL,
+        hint_text TEXT,
+        prereg_json TEXT NOT NULL,
+        prereg_hash TEXT NOT NULL,
+        adequacy_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'proposed',
+        night TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status);
+      CREATE TRIGGER IF NOT EXISTS hypotheses_identity_immutable BEFORE UPDATE ON hypotheses
+      WHEN OLD.id != NEW.id OR OLD.family_id != NEW.family_id
+        OR OLD.mechanism_id != NEW.mechanism_id OR OLD.timeframe != NEW.timeframe
+        OR OLD.direction != NEW.direction OR OLD.cubes_json != NEW.cubes_json
+        OR OLD.source != NEW.source OR OLD.prereg_json != NEW.prereg_json
+        OR OLD.prereg_hash != NEW.prereg_hash OR OLD.adequacy_json != NEW.adequacy_json
+        OR OLD.created_at != NEW.created_at
+      BEGIN SELECT RAISE(ABORT, 'hypothesis identity is immutable'); END;
+      CREATE TRIGGER IF NOT EXISTS hypotheses_status_forward BEFORE UPDATE ON hypotheses
+      WHEN OLD.status != NEW.status AND OLD.status != 'proposed'
+      BEGIN SELECT RAISE(ABORT, 'hypothesis status moves only from proposed'); END;
+      CREATE TRIGGER IF NOT EXISTS hypotheses_no_delete BEFORE DELETE ON hypotheses
+      BEGIN SELECT RAISE(ABORT, 'hypotheses are never deleted'); END;
+    `);
+
     this.db
-      .prepare("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '3')")
+      .prepare("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '4')")
       .run();
+  }
+
+  /**
+   * Предложить гипотезу. Повтор того же id молча игнорируется (false):
+   * генератор каждую ночь пересобирает те же идеи, и дубль не должен ни
+   * плодить строки, ни менять уже записанную пре-регистрацию.
+   */
+  proposeHypothesis(h: NewHypothesis): boolean {
+    const now = this.now();
+    const info = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO hypotheses(id, family_id, mechanism_id, timeframe, direction,
+           cubes_json, source, hint_text, prereg_json, prereg_hash, adequacy_json, status,
+           created_at, updated_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        h.id,
+        h.familyId,
+        h.mechanismId,
+        h.timeframe,
+        h.direction,
+        JSON.stringify(h.cubes),
+        h.source,
+        h.hintText ?? null,
+        h.preregJson,
+        h.preregHash,
+        JSON.stringify(h.adequacy),
+        h.status ?? "proposed",
+        now,
+        now,
+      );
+    return Number(info.changes) > 0;
+  }
+
+  hypotheses(status?: HypothesisStatus): HypothesisRow[] {
+    const rows = status
+      ? this.db.prepare("SELECT * FROM hypotheses WHERE status = ? ORDER BY created_at, id").all(status)
+      : this.db.prepare("SELECT * FROM hypotheses ORDER BY created_at, id").all();
+    return rows.map(toHypothesisRow);
+  }
+
+  /** Сколько гипотез уже поставлено в прогон в эту ночь. */
+  queuedOnNight(night: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM hypotheses WHERE status = 'queued' AND night = ?")
+      .get(night) as { n: number };
+    return row.n;
+  }
+
+  /**
+   * Поставить предложенную гипотезу в прогон. Лимит за ночь проверяется
+   * ВНУТРИ транзакции: два параллельных запуска не превысят его вдвоём.
+   * Возвращает false, если лимит исчерпан или гипотеза уже не proposed.
+   */
+  queueHypothesis(id: string, night: string, nightlyLimit: number): boolean {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.queuedOnNight(night) >= nightlyLimit) {
+        this.db.exec("ROLLBACK");
+        return false;
+      }
+      const info = this.db
+        .prepare(
+          "UPDATE hypotheses SET status = 'queued', night = ?, updated_at = ? WHERE id = ? AND status = 'proposed'",
+        )
+        .run(night, this.now(), id);
+      this.db.exec("COMMIT");
+      return Number(info.changes) > 0;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  /**
+   * Исход среза семейства в журнале: сколько испытаний на этом ТФ и сколько
+   * из них дошли хотя бы до валидации. Нужен «мозгу», чтобы не ставить идею,
+   * чей статический кластер (семейство × ТФ) уже мёртв.
+   */
+  familySliceOutcome(setupFamily: string, timeframe: string): { trials: number; survivors: number } {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS trials,
+                SUM(CASE WHEN state IN ('VALIDATED','INCUBATING','GRADUATED','DECAYING') THEN 1 ELSE 0 END) AS survivors
+           FROM trials
+          WHERE setup_family = ? AND json_extract(spec_json,'$.timeframe') = ?`,
+      )
+      .get(setupFamily, timeframe) as { trials: number; survivors: number | null };
+    return { trials: row.trials, survivors: row.survivors ?? 0 };
+  }
+
+  /** Отклонить предложенную гипотезу (владелец или повторная проверка). */
+  rejectHypothesis(id: string): boolean {
+    const info = this.db
+      .prepare(
+        "UPDATE hypotheses SET status = 'rejected', updated_at = ? WHERE id = ? AND status = 'proposed'",
+      )
+      .run(this.now(), id);
+    return Number(info.changes) > 0;
   }
 
   /**
@@ -824,8 +1015,17 @@ export class TrialLedger {
 
   /** Сколько РАЗНЫХ семейств когда-либо подавалось — множественность между ними. */
   familiesTried(): number {
+    // Поставленная гипотеза — уже выстрел, даже без испытаний; объединение,
+    // а не сумма: когда её испытания попадут в trials под тем же family_id,
+    // F не вырастет второй раз.
     const row = this.db
-      .prepare("SELECT COUNT(DISTINCT setup_family) AS n FROM trials")
+      .prepare(
+        `SELECT COUNT(*) AS n FROM (
+           SELECT setup_family AS f FROM trials
+           UNION
+           SELECT family_id AS f FROM hypotheses WHERE status = 'queued'
+         )`,
+      )
       .get() as { n: number };
     return row.n;
   }
