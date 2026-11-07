@@ -184,7 +184,37 @@ export const FILTERS: readonly FilterDef[] = [
 
 const FILTERS_BY_ID = new Map(FILTERS.map((f) => [f.id, f]));
 
+/**
+ * Вселенная семейства (P1, search-v4): символ входит в неё ПОМЕСЯЧНО и только
+ * по прошлому. Пустые поля берутся из умолчания (см. resolveUniverse).
+ */
+export interface UniverseDef {
+  /** N крупнейших по среднему нотионалу за бар предыдущего месяца. */
+  topN?: number;
+  /** Ликвидная/неликвидная половина по нотионалу предыдущего месяца. */
+  tier?: "liquid" | "illiquid";
+  /** Виды данных, без которых символ в этом месяце не член. */
+  requiresData?: readonly string[];
+  /** Сколько лет баров в окне поиска до месяца M нужно символу. */
+  minHistoryYears?: number;
+}
+
+/** Вселенная после подстановки умолчаний — вход помесячного членства. */
+export interface ResolvedUniverse {
+  topN?: number;
+  tier?: "liquid" | "illiquid";
+  requiresData: readonly string[];
+  minHistoryYears: number;
+}
+
 export interface SetupDef {
+  /** Вселенная семейства (P1). Умолчание: см. resolveUniverse. */
+  universe?: UniverseDef;
+  /**
+   * Тип свингового выхода на 4ч/1д (P7): rr, trail или time. По умолчанию rr.
+   * На 1ч и у ликвидностных выходов поле не действует.
+   */
+  swingExit?: "rr" | "trail" | "time";
   /**
    * На какой половине вселенной по ликвидности живёт семейство.
    * Разворот — только неликвидная половина, моментум — только ликвидная
@@ -1044,8 +1074,16 @@ export function setupNeighbors(setupId: string): string[] {
   return out;
 }
 
-/** Выходы, допустимые для сетапа: у семейства — свои, уровневые. */
-export function exitsFor(setupId: string): readonly ExitSpec[] {
+/**
+ * Выходы, допустимые для сетапа на данном ТФ: у семейства — свои, уровневые.
+ *
+ * P7 (search-v4): на 4ч и 1д сетап без собственного пула получает свинговую
+ * сетку из трёх выходов (один тип, три значения параметра, стоп 2 ATR) вместо
+ * 27 комбинаций. 1ч, ликвидностные выходы и собственные пулы семейств
+ * (фандинг: размеры зафиксированы пре-регистрациями) не меняются. `tf` не
+ * задан — старое поведение (сетка 1ч).
+ */
+export function exitsFor(setupId: string, tf?: SignalTf): readonly ExitSpec[] {
   // Свип боковика выходит ПО ЛИКВИДНОСТИ, как и магнит: цель — столб, а не
   // фиксированное R. Общий пул выходов здесь не подошёл бы по смыслу.
   if (
@@ -1058,8 +1096,10 @@ export function exitsFor(setupId: string): readonly ExitSpec[] {
     SESSION_SWEEP_PARAMS.has(setupId)
   )
     return LIQUIDITY_EXITS;
-  const own = SETUPS.find((s) => s.id === setupId)?.exits;
-  return own ?? EXITS;
+  const def = SETUPS.find((s) => s.id === setupId);
+  if (def?.exits) return def.exits;
+  if (tf === "4h" || tf === "1d") return swingExits(def?.swingExit ?? "rr");
+  return EXITS;
 }
 
 const SETUPS_BY_ID = new Map(SETUPS.map((s) => [s.id, s]));
@@ -1094,10 +1134,64 @@ export interface LiquidityExit {
   adds: number;
 }
 
-export type ExitSpec = RrExit | LiquidityExit;
+/**
+ * Свинговый выход (P7): один тип и ОДИН параметр, остальное зафиксировано.
+ *  - rr: тейк `value` R, удержание до 60 баров;
+ *  - trail: трейлинг `value` ATR от лучшего закрытия, без тейка, до 60 баров;
+ *  - time: удержание `value` баров, без тейка.
+ * Стоп — `stopAtr` ATR (в сетке поиска всегда 2; 1.5/2.5 только у соседей).
+ */
+export interface SwingExit {
+  kind: "swing";
+  type: "rr" | "trail" | "time";
+  value: number;
+  stopAtr: number;
+}
+
+export type ExitSpec = RrExit | LiquidityExit | SwingExit;
 
 export function isLiquidityExit(exit: ExitSpec): exit is LiquidityExit {
   return exit.kind === "liquidity";
+}
+
+export function isSwingExit(exit: ExitSpec): exit is SwingExit {
+  return exit.kind === "swing";
+}
+
+/** Стоп свинговой сетки поиска, ATR. */
+export const SWING_STOP_ATR = 2;
+/** Потолок удержания у rr и trail, баров. */
+export const SWING_MAX_BARS = 60;
+/** Значения параметра свингового выхода по типам — шаги сетки, они же соседи. */
+export const SWING_VALUES: Readonly<Record<SwingExit["type"], readonly number[]>> = {
+  rr: [2, 3, 5],
+  trail: [2, 3, 4],
+  time: [20, 40, 60],
+};
+/** Стопы ТОЛЬКО для соседей плато; в поиск не входят. */
+export const SWING_NEIGHBOR_STOPS = [1.5, 2.5] as const;
+
+/** Свинговая сетка поиска для типа выхода: три выхода, стоп 2 ATR. */
+export function swingExits(type: SwingExit["type"]): readonly SwingExit[] {
+  return SWING_VALUES[type].map((value) => ({
+    kind: "swing" as const,
+    type,
+    value,
+    stopAtr: SWING_STOP_ATR,
+  }));
+}
+
+/** Соседи свингового выхода: ±1 шаг параметра и стоп 1.5 / 2.5 ATR. */
+export function swingNeighborExits(exit: SwingExit): SwingExit[] {
+  const grid = SWING_VALUES[exit.type];
+  const idx = grid.indexOf(exit.value);
+  const out: SwingExit[] = [];
+  for (const delta of [-1, 1]) {
+    const j = idx + delta;
+    if (idx >= 0 && j >= 0 && j < grid.length) out.push({ ...exit, value: grid[j] });
+  }
+  for (const stopAtr of SWING_NEIGHBOR_STOPS) out.push({ ...exit, stopAtr });
+  return out;
 }
 
 const STOPS = [1.5, 2, 3] as const;
@@ -1149,6 +1243,11 @@ function exitTag(exit: ExitSpec): string {
     // узнавать — те же правила погнались бы второй раз как «новые».
     const scaleIn = exit.adds > 0 ? `a${exit.adds}` : "";
     return `q${exit.stopBufferAtr}p${exit.targetPullAtr}b${exit.maxBars}${scaleIn}`;
+  }
+  if (isSwingExit(exit)) {
+    // Отдельная кодировка: id свинговых выходов не должны совпасть ни с одним
+    // старым (`s…t…b…`, `q…p…b…`) — это другое исполнение, другие испытания.
+    return `sw:${exit.type}:${exit.value}:s${exit.stopAtr}`;
   }
   return `s${exit.stopAtr}t${exit.takeR}b${exit.maxBars}`;
 }
@@ -1236,11 +1335,52 @@ export function grammarSize(): number {
   // втрое меньше места, и эта формула обязана совпадать с enumerateAll —
   // расхождение ловится тестом «grammarSize equals actual enumeration count».
   let total = 0;
+  for (const setup of SETUPS) total += setupSpace(setup);
+  return total * DIRECTIONS.length;
+}
+
+/** Комбинации сетапа без направлений: фильтры × (выходы по ТФ, суммарно). */
+function setupSpace(setup: SetupDef): number {
+  const tfs = setup.tfs ?? SIGNAL_TFS;
+  const exits = tfs.reduce((sum, tf) => sum + exitsFor(setup.id, tf).length, 0);
+  return filterCombosFor(setup.id).length * exits;
+}
+
+/**
+ * Размер пространства семейства (вход × выходы × ТФ × направления) — порог
+ * «без деления» (P2): семейство меньше 2 000 комбинаций идёт сразу на полный
+ * пул. Считаются ВСЕ допустимые ТФ сетапов (число из пре-регистрации не
+ * зависит от того, какой ТФ гоняет ночь).
+ */
+export function familySpaceSize(family: string): number {
+  let total = 0;
   for (const setup of SETUPS) {
-    const tfCount = setup.tfs ? setup.tfs.length : SIGNAL_TFS.length;
-    total += filterCombosFor(setup.id).length * exitsFor(setup.id).length * tfCount;
+    if (setup.family === family) total += setupSpace(setup);
   }
   return total * DIRECTIONS.length;
+}
+
+/** Вселенная сетапа с подставленными умолчаниями (P1). */
+export function resolveUniverse(setupId: string): ResolvedUniverse {
+  const setup = SETUPS_BY_ID.get(setupId);
+  if (!setup) throw new Error(`неизвестный сетап: ${setupId}`);
+  const u = setup.universe;
+  return {
+    topN: u?.topN,
+    tier: u?.tier ?? setup.universeTier,
+    requiresData: u?.requiresData ?? setup.requiresContext ?? [],
+    minHistoryYears: u?.minHistoryYears ?? 1,
+  };
+}
+
+/** Стабильный ключ вселенной — по нему кандидаты делят пул и членство. */
+export function universeKey(u: ResolvedUniverse): string {
+  return [
+    `top=${u.topN ?? "-"}`,
+    `tier=${u.tier ?? "all"}`,
+    `data=${[...u.requiresData].sort().join(",") || "-"}`,
+    `hist=${u.minHistoryYears}`,
+  ].join("|");
 }
 
 /**
@@ -1260,7 +1400,7 @@ export function fundableSpaceSize(tf?: SignalTf): number {
     // занимает. Иначе число врало бы в большую сторону, и исчерпание
     // вселенной выглядело бы как «ещё есть куда расти».
     if (tf && setup.tfs && !setup.tfs.includes(tf)) continue;
-    total += filterCombosFor(setup.id).length * exitsFor(setup.id).length;
+    total += filterCombosFor(setup.id).length * exitsFor(setup.id, tf).length;
   }
   return total * DIRECTIONS.length;
 }
@@ -1275,7 +1415,7 @@ export function* enumerateAll(): Generator<CandidateSpec> {
           // аудита, и если сессионное правило появится в нём на 4ч, счёт
           // пространства разойдётся с тем, что сэмплер реально может выдать.
           if (setup.tfs && !setup.tfs.includes(timeframe)) continue;
-          for (const exit of exitsFor(setup.id)) {
+          for (const exit of exitsFor(setup.id, timeframe)) {
             yield { setup: setup.id, direction, timeframe, filters, exit };
           }
         }
@@ -1372,20 +1512,22 @@ export function sampleCandidates(
       }
     }
     const combos = filterCombosFor(setup.id);
+    // Порядок вызовов rand() прежний (направление, ТФ, фильтры, выход):
+    // детерминизм партии от сида не меняется. ТФ вычисляется ДО выхода, потому
+    // что пул выходов зависит от него (P7).
+    const direction = DIRECTIONS[Math.floor(rand() * DIRECTIONS.length)];
+    // rand() зовётся в любом случае: детерминизм партии от сида не должен
+    // зависеть от того, передан ли tf.
+    const rolledTf = SIGNAL_TFS[Math.floor(rand() * SIGNAL_TFS.length)];
+    const timeframe: SignalTf = options?.tf ?? rolledTf;
+    const filters = combos[Math.floor(rand() * combos.length)];
+    const pool = exitsFor(setup.id, timeframe);
     const spec: CandidateSpec = {
       setup: setup.id,
-      direction: DIRECTIONS[Math.floor(rand() * DIRECTIONS.length)],
-      // rand() зовётся в любом случае: детерминизм партии от сида не должен
-      // зависеть от того, передан ли tf.
-      timeframe: ((): SignalTf => {
-        const rolled = SIGNAL_TFS[Math.floor(rand() * SIGNAL_TFS.length)];
-        return options?.tf ?? rolled;
-      })(),
-      filters: combos[Math.floor(rand() * combos.length)],
-      exit: (() => {
-        const pool = exitsFor(setup.id);
-        return pool[Math.floor(rand() * pool.length)];
-      })(),
+      direction,
+      timeframe,
+      filters,
+      exit: pool[Math.floor(rand() * pool.length)],
     };
     // Второй рубеж на случай, когда ТФ не задан опцией и катится жребием:
     // без него старый путь (случайный ярлык ТФ) наполнил бы журнал
@@ -1408,6 +1550,39 @@ export function sampleCandidates(
     d.attemptsExhausted = attemptsUsed >= maxAttempts && picked.length < n;
   }
   return picked;
+}
+
+type ExitConfig = StrategyConfig["exit"];
+
+/** Стоп/тейк/трейлинг/доборы выхода — всё, кроме потолка баров. */
+function exitLegs(
+  exit: ExitSpec,
+): Pick<ExitConfig, "stopLoss" | "takeProfit" | "trailingStop" | "scaleInAdds"> {
+  if (isLiquidityExit(exit)) {
+    return {
+      stopLoss: { type: "liquidity" as const, value: exit.stopBufferAtr },
+      takeProfit: { type: "liquidity" as const, value: exit.targetPullAtr },
+      scaleInAdds: exit.adds,
+    };
+  }
+  if (isSwingExit(exit)) {
+    const stopLoss = { type: "atr" as const, value: exit.stopAtr };
+    if (exit.type === "rr") return { stopLoss, takeProfit: { type: "rr" as const, value: exit.value } };
+    const takeProfit = { type: "none" as const, value: 0 };
+    return exit.type === "trail"
+      ? { stopLoss, takeProfit, trailingStop: { atr: exit.value } }
+      : { stopLoss, takeProfit };
+  }
+  return {
+    stopLoss: { type: "atr" as const, value: exit.stopAtr },
+    takeProfit: { type: "rr" as const, value: exit.takeR },
+  };
+}
+
+/** Потолок удержания: у time — сам параметр, у остальных свингов — 60. */
+export function exitMaxBars(exit: ExitSpec): number {
+  if (!isSwingExit(exit)) return exit.maxBars;
+  return exit.type === "time" ? exit.value : SWING_MAX_BARS;
 }
 
 /**
@@ -1440,17 +1615,8 @@ export function toStrategyConfig(spec: CandidateSpec): StrategyConfig {
     symbols: [],
     entry,
     exit: {
-      ...(isLiquidityExit(spec.exit)
-        ? {
-            stopLoss: { type: "liquidity" as const, value: spec.exit.stopBufferAtr },
-            takeProfit: { type: "liquidity" as const, value: spec.exit.targetPullAtr },
-            scaleInAdds: spec.exit.adds,
-          }
-        : {
-            stopLoss: { type: "atr" as const, value: spec.exit.stopAtr },
-            takeProfit: { type: "rr" as const, value: spec.exit.takeR },
-          }),
-      maxBarsInTrade: spec.exit.maxBars,
+      ...exitLegs(spec.exit),
+      maxBarsInTrade: exitMaxBars(spec.exit),
       // Сопровождение — свойство СЕМЕЙСТВА, а не ось сетки: разведочный замер
       // показал, что результат к уровню частичного тейка нечувствителен
       // (0.3/0.5/1.0R близки), и тратить на него бюджет проб значило бы

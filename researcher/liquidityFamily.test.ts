@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   candidateId,
   enumerateAll,
+  exitMaxBars,
   isLiquidityExit,
   LIQUIDITY_EXITS,
   setupFamily,
@@ -168,7 +169,7 @@ describe("семейство часов фандинга", () => {
     const specs = [...enumerateAll()].filter((s) => setupFamily(s.setup) === "funding_hours");
     const stops = new Set(specs.map((s) => (s.exit as { stopAtr: number }).stopAtr));
     const takes = new Set(specs.map((s) => (s.exit as { takeR: number }).takeR));
-    const bars = new Set(specs.map((s) => s.exit.maxBars));
+    const bars = new Set(specs.map((s) => exitMaxBars(s.exit)));
     expect([...stops]).toEqual([2]); // единственный стоп — свободы подбора нет
     expect([...takes].sort()).toEqual([1, 2, 3]);
     expect([...bars].sort()).toEqual([10, 20]);

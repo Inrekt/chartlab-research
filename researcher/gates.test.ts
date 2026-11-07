@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 import type { TradeResult } from "../src/core/types/index.ts";
 import {
+  BREADTH_SHARE,
+  breadthShare,
+  breadthUnits,
   gateActivity,
   gateBreadth,
   gateCostStress,
@@ -255,5 +258,76 @@ describe("огрызки лет не голосуют в воротах врем
     expect(res.pass).toBe(false);
     expect(res.reason).toContain("нехватка истории");
     expect(res.metrics.corpusTooShort).toBe(true);
+  });
+});
+
+describe("breadthUnits (P3, search-v4)", () => {
+  test("символ с ≥10 сделками — своя единица, мелкие — корзины ≥10 сделок", () => {
+    const nets = [
+      sym("BIG", 12, 0.2),
+      ...Array.from({ length: 10 }, (_, i) => sym(`s${i}`, 3, i % 2 === 0 ? 0.5 : -0.5)),
+    ];
+    const units = breadthUnits(nets, 1);
+    expect(units.filter((u) => !u.isBucket)).toHaveLength(1);
+    const buckets = units.filter((u) => u.isBucket);
+    // 30 мелких сделок: корзины 3+3+3+3 = 12 → две корзины после долива остатка
+    expect(buckets.every((b) => b.trades >= 10)).toBe(true);
+    expect(buckets.reduce((a, b) => a + b.trades, 0)).toBe(30);
+  });
+
+  test("остаток < 10 доливается в последнюю корзину; мелких всего < 10 — вне ширины", () => {
+    const some = Array.from({ length: 4 }, (_, i) => sym(`a${i}`, 3, 0.1)); // 12 сделок → одна корзина
+    expect(breadthUnits(some, 1)).toHaveLength(1);
+    const few = [sym("x", 4, 0.3), sym("y", 3, -0.3)]; // 7 сделок
+    expect(breadthUnits(few, 1)).toHaveLength(0);
+    expect(breadthShare(few, 1)).toMatchObject({ units: 0, share: 0, droppedTrades: 7 });
+  });
+
+  test("чистая функция: тот же вход и соль дают те же единицы; бакет — взвешенное среднее", () => {
+    const nets = [sym("p", 6, 1), sym("q", 6, -0.5)];
+    const a = breadthUnits(nets, 7);
+    expect(breadthUnits(nets, 7)).toEqual(a);
+    expect(a).toHaveLength(1);
+    expect(a[0].netExpectancy).toBeCloseTo((6 * 1 + 6 * -0.5) / 12, 10);
+  });
+
+  /** Мир редких входов: на каждом символе 1–3 сделки, исход случайный. */
+  const rareWorld = (winRate: number, win: number, loss: number, seed: number): SymbolNet[] => {
+    let a = seed >>> 0;
+    const rand = () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(a ^ (a >>> 15), a | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    return Array.from({ length: 300 }, (_, i) => {
+      const n = 1 + Math.floor(rand() * 3);
+      let sum = 0;
+      for (let k = 0; k < n; k++) sum += rand() < winRate ? win : -loss;
+      return sym(`R${i}`, n, sum / n);
+    });
+  };
+  const passRate = (win: number, wr: number, loss: number): number => {
+    let ok = 0;
+    for (let s = 0; s < 40; s++) {
+      if (breadthShare(rareWorld(wr, win, loss, 100 + s), 0xc0ffee).share >= BREADTH_SHARE) ok += 1;
+    }
+    return ok / 40;
+  };
+
+  test("35% винрейт, 3R (+0.40R) на символах с 1–3 сделками проходит ширину 0.6", () => {
+    expect(passRate(3, 0.35, 1)).toBeGreaterThanOrEqual(0.9);
+  });
+
+  test("75% винрейт, +0.5R / −1.6R (левый хвост) ширину не проходит", () => {
+    expect(passRate(0.5, 0.75, 1.6)).toBeLessThanOrEqual(0.1);
+  });
+
+  test("gateBreadth пишет единицы, корзины, плюсовые и долю в метрики и причину", () => {
+    const nets = [...Array.from({ length: 4 }, (_, i) => sym(`N${i}`, 10, -0.1)), sym("P", 10, 0.2)];
+    const g = gateBreadth(nets, { netExpectancy: 0.1, trades: 40 });
+    expect(g.pass).toBe(false);
+    expect(g.metrics).toMatchObject({ units: 5, buckets: 0, positiveUnits: 1, positiveShare: 0.2 });
+    expect(g.reason).toContain("1 из 5");
   });
 });

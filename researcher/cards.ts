@@ -9,7 +9,9 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SETUPS, type CandidateSpec,
+  exitMaxBars,
   isLiquidityExit,
+  isSwingExit,
 } from "./grammar.ts";
 import { DEFAULT_VAULT_DIR } from "./paths.ts";
 import { netR, type IncubationRow, type PaperTradeRow } from "./incubationBook.ts";
@@ -93,6 +95,15 @@ function exitLines(exit: CandidateSpec["exit"]): string {
       "- **Если скоплений впереди нет — сделки нет:** цель здесь и есть смысл входа",
     ].join("\n");
   }
+  if (isSwingExit(exit)) {
+    const take =
+      exit.type === "rr"
+        ? `${exit.value}R (${exit.value} × расстояние до стопа)`
+        : exit.type === "trail"
+          ? `нет; трейлинг ${exit.value} × ATR(14) от лучшего закрытия`
+          : `нет; выход по времени через ${exit.value} баров`;
+    return [`- **Стоп:** ${exit.stopAtr} × ATR(14) от цены входа`, `- **Тейк:** ${take}`].join("\n");
+  }
   return [
     `- **Стоп:** ${exit.stopAtr} × ATR(14) от цены входа`,
     `- **Тейк:** ${exit.takeR}R (${exit.takeR} × расстояние до стопа)`,
@@ -139,7 +150,7 @@ status: active
 - **Подтверждения (все обязательны):**
 ${filterLines}
 ${exitLines(spec.exit)}
-- **Время:** позиция закрывается через ${spec.exit.maxBars} баров, если не вышла раньше
+- **Время:** позиция закрывается через ${exitMaxBars(spec.exit)} баров, если не вышла раньше
 - **Инструменты:** ${incubation.symbols.join(", ")}
 - Вход по цене открытия СЛЕДУЮЩЕГО бара после сигнального. Один инструмент —
   одна позиция; новые сигналы при открытой позиции пропускаются.

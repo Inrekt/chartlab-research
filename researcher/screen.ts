@@ -2,7 +2,8 @@
  * Ночной скрин — жернова исследователя.
  *
  * Конвейер за ночь: выборка свежих кандидатов из закрытой грамматики →
- * успешное деление пополам (16 → 128 символов — бюджет уходит выжившим) →
+ * ранний отсев на символо-годах (поиск v4: стадия A до 150 сделок, стадия B до
+ * 600; малые семейства идут сразу на полный пул — бюджет уходит выжившим) →
  * полный гаунтлет ворот в порядке «дешёвое → дорогое»: активность, ширина с
  * отложенными символами, стресс издержек ×2, плато Пардо, разностная
  * нуль-модель с сохранением расписания (t≥2.6 по дневному портфелю),
@@ -27,40 +28,59 @@ import { runBacktest } from "../src/core/backtest/engine.ts";
 import {
   averageCostInR,
   DEFAULT_COSTS,
+  MAKER_FEE_RATE,
   setActiveCosts,
   statsAfterCosts,
   tradeCostInR,
 } from "../src/core/committee/costModel.ts";
 import { buildSlippageTable } from "./liquidityCosts.ts";
+import { buildFundingCost } from "./fundingCost.ts";
+import { loadFundingHistory } from "../src/core/funding/fundingSeries.ts";
 import {
   candidateId,
   EXITS,
+  familySpaceSize,
   isLiquidityExit,
+  isSwingExit,
   LIQUIDITY_EXITS,
+  resolveUniverse,
   setupFamily,
   setupNeighbors,
-  setupTier,
   sampleCandidates,
+  swingNeighborExits,
   type SampleDiagnostics,
   toStrategyConfig,
+  universeKey,
   type CandidateSpec,
+  type ResolvedUniverse,
   type SignalTf,
 } from "./grammar.ts";
 import {
-  liquidityTiers,
-  type LiquidityTier,
   clearCandleCache,
   corpusVersion,
-  halvingSubset,
   listUniverse,
+  loadCandles,
   loadCandlesWindow,
   OOT_CUTOFF_ISO,
   OOT_CUTOFF_SEC,
   splitHoldout,
   type CorpusWindow,
 } from "./corpus.ts";
+import { monthKey } from "./liquidityCosts.ts";
+import { buildProfile, computeMembership, type Membership } from "./universe.ts";
+import {
+  isNoDivision,
+  memberUnits,
+  netT,
+  PoolTrades,
+  STAGE_A_MIN_T,
+  STAGE_A_TRADE_BUDGET,
+  STAGE_B_TRADE_BUDGET,
+  type PoolUnit,
+} from "./unitScreen.ts";
 import { OOT_T_MIN, scheduledNullGate } from "./nullSchedule.ts";
 import {
+  breadthShare,
   gateActivity,
   gateBreadth,
   gateCostStress,
@@ -85,14 +105,19 @@ import { TrialLedger } from "./ledger.ts";
 import { behavioralExclusionFor, currentGitSha, GATE_VERSION, markEpoch } from "./epochs.ts";
 import { classifyDeath, depthScore } from "./gatePolicy.ts";
 
+/**
+ * Размер старого поднабора стадии-16: его по-прежнему читает oot-bench
+ * (замер прибора на фиксированных символах). Сам отсев с search-v4 идёт на
+ * символо-годах с бюджетом сделок — см. unitScreen.ts.
+ */
 export const STAGE_A_SYMBOLS = 16;
-export const STAGE_B_SYMBOLS = 128;
+/** Минимум сделок, чтобы Шарп кандидата вообще попал в оценку дисперсии DSR. */
 const STAGE_A_MIN_TRADES = 8;
-const STAGE_B_MIN_TRADES = 40;
 const STAGE_B_MIN_POSITIVE_SHARE = 0.45;
 export const FDR_Q = 0.1;
-/** Фиксированная соль деления пополам: стадия-16 — префикс стадии-128,
- * и обе стабильны от ночи к ночи (сравнимость журнала). */
+/** Фиксированная соль порядка отсева: стадия A — префикс стадии B, и порядок
+ * единиц стабилен от ночи к ночи (сравнимость журнала). Она же — соль корзин
+ * ширины (gates.BREADTH_SALT). */
 export const HALVING_SALT = 0xc0ffee;
 
 /**
@@ -153,6 +178,8 @@ function runStage(
   log?: (m: string) => void,
   /** Окно корпуса. Весь поиск живёт в "in"; "oot" — только финальные ворота. */
   window: CorpusWindow = "in",
+  /** Членство (P1): сделка считается, только если месяц входа — месяц членства. */
+  isMember?: (symbol: string, entryTimeSec: number) => boolean,
 ): Map<string, TradeResult[]> {
   const configs = specs.map((spec) => ({ id: candidateId(spec), config: toStrategyConfig(spec) }));
   const acc = new Map<string, TradeResult[]>(configs.map((c) => [c.id, []]));
@@ -162,7 +189,8 @@ function runStage(
     done += 1;
     if (!candles) continue;
     for (const { id, config } of configs) {
-      acc.get(id)!.push(...runBacktest(candles, config, symbol));
+      const trades = runBacktest(candles, config, symbol);
+      acc.get(id)!.push(...(isMember ? trades.filter((t) => isMember(symbol, t.entryTime)) : trades));
     }
     if (log && done % 25 === 0) log(`  …${done}/${symbols.length} символов`);
   }
@@ -257,6 +285,12 @@ export function neighborSpecs(spec: CandidateSpec): CandidateSpec[] {
     return out;
   }
 
+  if (isSwingExit(spec.exit)) {
+    // P7: ±1 шаг параметра и стоп 1.5/2.5 ATR — только соседи, в поиск не входят.
+    for (const exit of swingNeighborExits(spec.exit)) out.push({ ...spec, exit });
+    return out;
+  }
+
   const rr = spec.exit;
   const steps = {
     stopAtr: [...new Set(EXITS.map((e) => e.stopAtr))].sort((a, b) => a - b),
@@ -294,6 +328,8 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     gate: string,
     reason: string,
     extra?: Parameters<typeof classifyDeath>[1],
+    /** Числа смерти (P3: единицы/корзины/плюсовые/доля) — в журнал рядом с причиной. */
+    metrics?: Record<string, number | string | boolean>,
   ) => {
     rejectedByGate[gate] = (rejectedByGate[gate] ?? 0) + 1;
     ledger.recordEval(id, "post_mortem", {
@@ -301,21 +337,13 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
       cause: classifyDeath(gate, extra),
       depth: depthScore(gate),
       gateVersion: GATE_VERSION,
+      ...(metrics ?? {}),
     });
     ledger.transition(id, "REJECTED", reason);
   };
 
   const universe = listUniverse(opts.tf);
   const { search, holdout } = splitHoldout(universe);
-  /**
-   * Срез по ликвидности (пункт 3 фазы 1): семейства с universeTier живут на
-   * своей половине вселенной — разворот на неликвидной, моментум на ликвидной.
-   * Половины считаются по нотионалу in-окна ОДИН раз на вселенную; halvingSubset
-   * поверх отфильтрованного пула сохраняет свойство «стадия-16 — префикс
-   * стадии-128» внутри каждого среза.
-   */
-  const tiers = liquidityTiers(opts.tf, universe);
-
   /**
    * Издержки по ЛИКВИДНОСТИ символа в момент сделки — на весь прогон.
    *
@@ -356,57 +384,94 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   }
   const restoreCosts = setActiveCosts({
     feeRate: DEFAULT_COSTS.feeRate,
+    makerFeeRate: MAKER_FEE_RATE,
     slippageRate: DEFAULT_COSTS.slippageRate,
     slippageFor: slippage.slippageFor,
+    // Поиск v4 (P4): фандинг списывается в PnL; цена позиции на выплате —
+    // закрытие бара, в который выплата попала.
+    fundingFor: buildFundingCost(loadFundingHistory, closePriceAt(opts.tf)),
   });
   log(`издержки: по ликвидности, покрыто символов ${slippage.symbols} из ${universe.length}`);
-  const poolOf = (list: readonly string[], tier: LiquidityTier | undefined): string[] =>
-    tier ? list.filter((symbol) => tiers.get(symbol) === tier) : [...list];
+
   /**
-   * Стадийные списки на срез. Префиксное свойство «стадия-16 ⊂ стадия-128 ⊂
-   * весь пул» обязано выполняться ВНУТРИ каждого среза — halvingSubset поверх
-   * отфильтрованного пула это даёт (сортировка по хэшу устойчива к фильтру).
+   * Вселенные семейств (P1, search-v4). Профили символов (нотионал по месяцам,
+   * первый бар окна) считаются один раз; членство — по правилу вселенной,
+   * одно на каждое различное описание. Кандидаты с одинаковой вселенной делят
+   * пул, порядок единиц и кэш сделок.
    */
-  const stageListsFor = (tier: LiquidityTier | undefined) => {
-    const pool = poolOf(search, tier);
-    return {
+  const profiles = universe.map((symbol) =>
+    buildProfile(symbol, loadCandles(symbol, opts.tf), loadCandlesWindow(symbol, opts.tf, "in")),
+  );
+  const searchSet = new Set(search);
+  const holdoutSet = new Set(holdout);
+  const cutoffMonthStart = (month: string): boolean => Date.parse(`${month}-01T00:00:00Z`) / 1000 < OOT_CUTOFF_SEC;
+  interface UniverseGroup {
+    key: string;
+    definition: ResolvedUniverse;
+    membership: Membership;
+    /** Поисковые символы, бывшие членами хотя бы месяц окна поиска. */
+    pool: string[];
+    /** Отложенные ∩ вселенная (то же помесячное членство). */
+    holdout: string[];
+    /** Все члены хотя бы одного месяца OOT-окна. */
+    oot: string[];
+    /** Единицы отсева в порядке хэша `соль:символ:год`. */
+    units: PoolUnit[];
+    /** Размер вселенной: различные поисковые символы-члены. */
+    size: number;
+    /** Кэш сделок символо-годов: стадии A, B и полный пул делят прогон символа. */
+    trades: PoolTrades;
+  }
+  const groups = new Map<string, UniverseGroup>();
+  const groupFor = (setupId: string): UniverseGroup => {
+    const definition = resolveUniverse(setupId);
+    const key = universeKey(definition);
+    const cached = groups.get(key);
+    if (cached) return cached;
+    const membership = computeMembership(profiles, definition);
+    const pool = membership.symbolsEver(cutoffMonthStart).filter((s) => searchSet.has(s));
+    const group: UniverseGroup = {
+      key,
+      definition,
+      membership,
       pool,
-      a: halvingSubset(pool, STAGE_A_SYMBOLS, HALVING_SALT),
-      b: halvingSubset(pool, STAGE_B_SYMBOLS, HALVING_SALT),
-      holdout: poolOf(holdout, tier),
-      oot: poolOf([...search, ...holdout], tier),
+      holdout: membership.symbolsEver(cutoffMonthStart).filter((s) => holdoutSet.has(s)),
+      oot: membership.symbolsEver((m) => !cutoffMonthStart(m)),
+      units: memberUnits(membership, pool, OOT_CUTOFF_SEC, HALVING_SALT),
+      size: pool.length,
+      trades: new PoolTrades({
+        runSymbol: (symbol, runSpecs) => runStage(runSpecs, [symbol], opts.tf),
+        isMember: (symbol, entryTimeSec) => membership.isMember(symbol, monthKey(entryTimeSec)),
+      }),
     };
+    groups.set(key, group);
+    log(`вселенная [${key}]: ${group.size} поисковых символов, ${group.holdout.length} отложенных, ${group.units.length} символо-годов`);
+    return group;
   };
-  const tierLists = {
-    all: stageListsFor(undefined),
-    liquid: stageListsFor("liquid"),
-    illiquid: stageListsFor("illiquid"),
-  } as const;
-  type TierLists = (typeof tierLists)["all"];
-  const runStageTiered = (
+  const memberOf = (group: UniverseGroup) => (symbol: string, entryTimeSec: number): boolean =>
+    group.membership.isMember(symbol, monthKey(entryTimeSec));
+  /** Прогон списка кандидатов на символах группы (окно, членство) — по группам вселенных. */
+  const runGrouped = (
     list: readonly CandidateSpec[],
-    pick: (lists: TierLists) => readonly string[],
+    pick: (g: UniverseGroup) => readonly string[],
     window: CorpusWindow = "in",
     stageLog?: (m: string) => void,
   ): Map<string, TradeResult[]> => {
-    const groups = new Map<keyof typeof tierLists, CandidateSpec[]>();
+    const byGroup = new Map<string, { group: UniverseGroup; specs: CandidateSpec[] }>();
     for (const spec of list) {
-      const key = (setupTier(spec.setup) ?? "all") as keyof typeof tierLists;
-      const group = groups.get(key);
-      if (group) group.push(spec);
-      else groups.set(key, [spec]);
+      const group = groupFor(spec.setup);
+      const entry = byGroup.get(group.key);
+      if (entry) entry.specs.push(spec);
+      else byGroup.set(group.key, { group, specs: [spec] });
     }
     const out = new Map<string, TradeResult[]>();
-    for (const [key, group] of groups) {
-      const symbols = pick(tierLists[key]);
-      for (const [id, trades] of runStage(group, symbols, opts.tf, stageLog, window)) {
+    for (const { group, specs: groupSpecs } of byGroup.values()) {
+      for (const [id, trades] of runStage(groupSpecs, pick(group), opts.tf, stageLog, window, memberOf(group))) {
         out.set(id, trades);
       }
     }
     return out;
   };
-  const stageASymbols = tierLists.all.a;
-
   // Эпоха-2: кандидат несёт РЕАЛЬНЫЙ ТФ ночи, а повторы блокируются по
   // поведению (правило × корпус), а не по ярлыку — см. epochs.ts.
   markEpoch(opts.dbPath);
@@ -481,21 +546,57 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     );
   }
 
-  // ── Стадия 16 символов ────────────────────────────────────────────────────
-  log(`Стадия 1/3: ${specs.length} кандидатов × ${stageASymbols.length} символов…`);
-  const tradesA = runStageTiered(specs, (l) => l.a);
+  // ── Стадия A: символо-годы до 150 сделок (P2) ─────────────────────────────
+  /*
+   * Единица отсева — символ × год, порядок по хэшу `соль:символ:год`; кандидат
+   * берёт единицы, пока не наберёт 150 сделок (чистые R, только месяцы
+   * членства). Проходит при t_net > −0.5; «мало сделок» — только если ВЕСЬ пул
+   * дал < 150. Семейства без деления (пространство < 2000 или вселенная ≤ 48)
+   * сразу гонятся на полном пуле и идут к воротам — но в журнал пишутся.
+   */
+  const noDivisionIds = new Set<string>();
+  const stageATrades = new Map<string, TradeResult[]>();
+  const stageAUnits = new Map<string, { unitsUsed: number; poolUnits: number }>();
+  const specsByGroup = new Map<string, { group: ReturnType<typeof groupFor>; specs: CandidateSpec[] }>();
+  for (const spec of specs) {
+    const group = groupFor(spec.setup);
+    const entry = specsByGroup.get(group.key);
+    if (entry) entry.specs.push(spec);
+    else specsByGroup.set(group.key, { group, specs: [spec] });
+  }
+  log(`Стадия 1/3: ${specs.length} кандидатов, вселенных ${specsByGroup.size}…`);
+  for (const { group, specs: groupSpecs } of specsByGroup.values()) {
+    const staged: CandidateSpec[] = [];
+    const direct: CandidateSpec[] = [];
+    for (const spec of groupSpecs) {
+      (isNoDivision(familySpaceSize(setupFamily(spec.setup)), group.size) ? direct : staged).push(spec);
+    }
+    for (const spec of direct) noDivisionIds.add(candidateId(spec));
+    if (direct.length > 0) {
+      log(`  без деления: ${direct.length} кандидатов, полный пул ${group.pool.length} символов`);
+      for (const [id, trades] of group.trades.all(direct, group.pool)) stageATrades.set(id, trades);
+    }
+    if (staged.length > 0) {
+      for (const [id, r] of group.trades.take(staged, group.units, STAGE_A_TRADE_BUDGET)) {
+        stageATrades.set(id, r.trades);
+        stageAUnits.set(id, { unitsUsed: r.unitsUsed, poolUnits: group.units.length });
+      }
+    }
+  }
   const stageASharpes: number[] = [];
   const stageATradeCounts: number[] = [];
   const stageAFamilies: string[] = [];
   const survivorsA: CandidateSpec[] = [];
   for (const spec of specs) {
     const id = candidateId(spec);
-    const trades = tradesA.get(id)!;
+    const group = groupFor(spec.setup);
+    const trades = stageATrades.get(id)!;
     const net = statsAfterCosts(trades).expectancy;
     const netRs = netRMultiples(trades);
     // Только кандидаты, прошедшие порог активности: Шарп на 5–7 сделках —
     // шумовая бомба (SD ≈ 0.45), эпоха-1 такими задирала дисперсию партии и
     // через неё планку E[max] ВСЕМ финалистам (√varSR 0.079 вместо ~0.03).
+    // P2: у больших семейств Шарп берётся со стадии A, у малых — с полного пула.
     if (trades.length >= STAGE_A_MIN_TRADES && netRs.length >= 5) {
       stageASharpes.push(tradeSharpe(netRs));
       stageATradeCounts.push(netRs.length);
@@ -506,19 +607,30 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
       // сюда попадают только кандидаты, чей Шарп вообще измерим.
       stageAFamilies.push(setupFamily(spec.setup));
     }
+    const skipped = noDivisionIds.has(id);
+    const t = netT(netRs);
     ledger.recordEval(id, "halving_16", {
       trades: trades.length,
       netExpectancy: net,
       ...tradeEconomics(trades),
+      tNet: Number.isFinite(t) ? Number(t.toFixed(3)) : t > 0 ? 999 : -999,
+      ...(skipped
+        ? { skipped: "no_division", familySpace: familySpaceSize(setupFamily(spec.setup)) }
+        : { unitsUsed: stageAUnits.get(id)!.unitsUsed, poolUnits: stageAUnits.get(id)!.poolUnits }),
+      universeSize: group.size,
       runTf: opts.tf,
       seed: opts.seed,
       batchId,
       gateVersion: GATE_VERSION,
     });
-    if (trades.length < STAGE_A_MIN_TRADES) {
-      reject(id, "halving_16", `халвинг-16: лишь ${trades.length} сделок`, { trades: trades.length, minTrades: STAGE_A_MIN_TRADES });
-    } else if (net <= 0) {
-      reject(id, "halving_16", `халвинг-16: матожидание ${net.toFixed(3)}R ≤ 0 после издержек`, { grossExpectancy: tradeEconomics(trades).grossExpectancy, netExpectancy: net });
+    if (skipped) {
+      survivorsA.push(spec);
+    } else if (trades.length < STAGE_A_TRADE_BUDGET) {
+      reject(id, "halving_16", `халвинг-A: весь пул дал лишь ${trades.length} сделок < ${STAGE_A_TRADE_BUDGET}`, { trades: trades.length, minTrades: STAGE_A_TRADE_BUDGET });
+      group.trades.drop(spec);
+    } else if (!(t > STAGE_A_MIN_T)) {
+      reject(id, "halving_16", `халвинг-A: t_net=${t.toFixed(2)} ≤ ${STAGE_A_MIN_T} (матожидание ${net.toFixed(3)}R после издержек)`, { grossExpectancy: tradeEconomics(trades).grossExpectancy, netExpectancy: net });
+      group.trades.drop(spec);
     } else {
       survivorsA.push(spec);
     }
@@ -605,7 +717,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
 
   // Диагностика ПРОЦЕССА на всей партии (с проигравшими): RC Уайта — «нашла
   // ли ночь хоть что-то с учётом перебора», PBO — «не выбирает ли отбор шум».
-  const matrix = buildDailyMatrix(tradesA);
+  const matrix = buildDailyMatrix(stageATrades);
   const diagnostics = matrix
     ? { realityCheck: whiteRealityCheck(matrix, 500, opts.seed), pbo: cscvPbo(matrix) }
     : null;
@@ -624,7 +736,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     let assigned = 0;
     for (let i = 0; i < matrix.candidates.length; i++) {
       const id = matrix.candidates[i];
-      if ((tradesA.get(id)?.length ?? 0) < 10) continue; // шумовой отпечаток
+      if ((stageATrades.get(id)?.length ?? 0) < 10) continue; // шумовой отпечаток
       try {
         ledger.setClusterKey(
           id,
@@ -639,36 +751,66 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     log(`  кластеры: назначено ${assigned}, всего в журнале ${ledger.counts().clusters}.`);
   }
 
-  // ── Стадия 128 символов (дозапуск только новых символов) ──────────────────
-  log(`Стадия 2/3: ${survivorsA.length} кандидатов × до ${STAGE_B_SYMBOLS} символов…`);
-  const extraB = runStageTiered(survivorsA, (l) => l.b.slice(l.a.length), "in", log);
+  // ── Стадия B: продолжение того же порядка до 600 сделок (P2) ──────────────
+  log(`Стадия 2/3: ${survivorsA.length} кандидатов, бюджет ${STAGE_B_TRADE_BUDGET} сделок…`);
   const survivorsB: CandidateSpec[] = [];
-  const tradesB = new Map<string, TradeResult[]>();
+  const stageBResults = new Map<string, { trades: TradeResult[]; unitsUsed: number }>();
+  for (const { group, specs: groupSpecs } of specsByGroup.values()) {
+    const staged = groupSpecs.filter(
+      (s) => !noDivisionIds.has(candidateId(s)) && survivorsA.includes(s),
+    );
+    if (staged.length === 0) continue;
+    for (const [id, r] of group.trades.take(staged, group.units, STAGE_B_TRADE_BUDGET)) {
+      stageBResults.set(id, { trades: r.trades, unitsUsed: r.unitsUsed });
+    }
+  }
   for (const spec of survivorsA) {
     const id = candidateId(spec);
-    const trades = [...tradesA.get(id)!, ...extraB.get(id)!];
-    tradesB.set(id, trades);
-    const nets = perSymbolNets(trades);
-    const traded = nets.filter((s) => s.trades > 0);
-    const positiveShare =
-      traded.length > 0 ? traded.filter((s) => s.netExpectancy > 0).length / traded.length : 0;
+    if (noDivisionIds.has(id)) {
+      // Без деления: стадия B пропущена, ворота получат полный пул. Запись нужна,
+      // чтобы журнал и диагностика видели кандидата на обеих стадиях.
+      const trades = stageATrades.get(id)!;
+      ledger.recordEval(id, "halving_128", {
+        trades: trades.length,
+        netExpectancy: statsAfterCosts(trades).expectancy,
+        skipped: "no_division",
+        ...tradeEconomics(trades),
+        runTf: opts.tf,
+        gateVersion: GATE_VERSION,
+      });
+      ledger.transition(id, "SCREENED", "без деления: малое пространство или вселенная, сразу на полный пул");
+      survivorsB.push(spec);
+      continue;
+    }
+    const { trades, unitsUsed } = stageBResults.get(id)!;
+    const breadth = breadthShare(perSymbolNets(trades), HALVING_SALT);
     const net = statsAfterCosts(trades).expectancy;
+    const breadthMetrics = {
+      units: breadth.units,
+      buckets: breadth.buckets,
+      positiveUnits: breadth.positiveUnits,
+      share: Number(breadth.share.toFixed(3)),
+    };
     ledger.recordEval(id, "halving_128", {
       trades: trades.length,
       netExpectancy: net,
-      positiveShare,
+      positiveShare: breadth.share,
+      ...breadthMetrics,
+      unitsUsed,
       ...tradeEconomics(trades),
       runTf: opts.tf,
       gateVersion: GATE_VERSION,
     });
-    if (trades.length < STAGE_B_MIN_TRADES) {
-      reject(id, "halving_128", `халвинг-128: лишь ${trades.length} сделок`, { trades: trades.length, minTrades: STAGE_B_MIN_TRADES });
-    } else if (net <= 0) {
-      reject(id, "halving_128", `халвинг-128: матожидание ≤ 0 после издержек`, { grossExpectancy: tradeEconomics(trades).grossExpectancy, netExpectancy: net });
-    } else if (positiveShare < STAGE_B_MIN_POSITIVE_SHARE) {
-      reject(id, "halving_128", `халвинг-128: прибыльна лишь на ${(positiveShare * 100).toFixed(0)}% символов`);
+    const breadthText = `${breadth.positiveUnits} из ${breadth.units} единиц (корзин ${breadth.buckets})`;
+    const spec128 = groupFor(spec.setup);
+    if (net <= 0) {
+      reject(id, "halving_128", `халвинг-B: матожидание ${net.toFixed(3)}R ≤ 0 после издержек; в плюсе ${breadthText}`, { grossExpectancy: tradeEconomics(trades).grossExpectancy, netExpectancy: net }, breadthMetrics);
+      spec128.trades.drop(spec);
+    } else if (breadth.share < STAGE_B_MIN_POSITIVE_SHARE) {
+      reject(id, "halving_128", `халвинг-B: прибыльны ${breadthText}, ${(breadth.share * 100).toFixed(0)}% < 45%`, { grossExpectancy: tradeEconomics(trades).grossExpectancy, netExpectancy: net }, breadthMetrics);
+      spec128.trades.drop(spec);
     } else {
-      ledger.transition(id, "SCREENED", "прошёл деление пополам 16→128");
+      ledger.transition(id, "SCREENED", "прошёл отсев A→B по символо-годам");
       survivorsB.push(spec);
     }
   }
@@ -676,8 +818,13 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
 
   // ── Полный гаунтлет ───────────────────────────────────────────────────────
   log(`Стадия 3/3 (гаунтлет): ${survivorsB.length} кандидатов…`);
-  const extraFull = runStageTiered(survivorsB, (l) => l.pool.slice(l.b.length));
-  const holdoutTrades = runStageTiered(survivorsB, (l) => l.holdout);
+  const fullTrades = new Map<string, TradeResult[]>();
+  for (const { group, specs: groupSpecs } of specsByGroup.values()) {
+    const wanted = groupSpecs.filter((s) => survivorsB.includes(s));
+    if (wanted.length === 0) continue;
+    for (const [id, trades] of group.trades.all(wanted, group.pool)) fullTrades.set(id, trades);
+  }
+  const holdoutTrades = runGrouped(survivorsB, (g) => g.holdout);
 
   interface Finalist {
     spec: CandidateSpec;
@@ -688,7 +835,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   }
   let finalists: Finalist[] = survivorsB.map((spec) => {
     const id = candidateId(spec);
-    return { spec, id, trades: [...tradesB.get(id)!, ...(extraFull.get(id) ?? [])] };
+    return { spec, id, trades: fullTrades.get(id) ?? [] };
   });
 
   const applyGate = (name: string, f: Finalist, gate: GateResult): boolean => {
@@ -712,12 +859,17 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
   });
   log(`  после активности/ширины/стресса: ${finalists.length}.`);
 
-  // G4: плато — соседи по сетке выходов на символах стадии-16.
+  // G4: плато — соседи по сетке выходов; и сам кандидат, и соседи считаются на
+  // ПОЛНОМ пуле своей вселенной (P2). Соседи всех финалистов гонятся одним
+  // символ-мажорным проходом на группу вселенной.
+  const neighborsOf = new Map<string, CandidateSpec[]>(finalists.map((f) => [f.id, neighborSpecs(f.spec)]));
+  const uniqueNeighbors = [
+    ...new Map([...neighborsOf.values()].flat().map((n) => [candidateId(n), n] as const)).values(),
+  ];
+  const neighborTrades = runGrouped(uniqueNeighbors, (g) => g.pool);
   finalists = finalists.filter((f) => {
-    const neighbors = neighborSpecs(f.spec);
-    const neighborTrades = runStageTiered(neighbors, (l) => l.a);
-    const nets = neighbors.map((n) => statsAfterCosts(neighborTrades.get(candidateId(n))!).expectancy);
-    const own = statsAfterCosts(tradesA.get(f.id)!).expectancy;
+    const nets = neighborsOf.get(f.id)!.map((n) => statsAfterCosts(neighborTrades.get(candidateId(n)) ?? []).expectancy);
+    const own = statsAfterCosts(f.trades).expectancy;
     return applyGate("gate_plateau", f, gatePlateau(own, nets));
   });
   log(`  после плато: ${finalists.length}.`);
@@ -821,7 +973,7 @@ export function runScreen(opts: ScreenOptions): ScreenSummary {
     // по всей вселенной здесь дёшев. Тест тот же (разностный, с сохранением
     // расписания), порог ниже: на годе данных наблюдений в пять раз меньше,
     // и t≥2.6 убивал бы 3/4 настоящих краёв (calibrate.ts --mode oot).
-    const ootRaw = runStageTiered([f.spec], (l) => l.oot, "oot").get(f.id) ?? [];
+    const ootRaw = runGrouped([f.spec], (g) => g.oot, "oot").get(f.id) ?? [];
     const ootTrades = ootRaw.filter((t) => t.entryTime >= OOT_CUTOFF_SEC);
     const ootBySymbol = new Map<string, TradeResult[]>();
     for (const t of ootTrades) {
@@ -948,4 +1100,26 @@ function main(): void {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
+}
+
+
+/**
+ * Цена закрытия бара, в который попадает момент `timeSec` (поиск v4, P4:
+ * нотионал позиции на выплате фандинга). Свечи символа кэшируются на ночь.
+ */
+function closePriceAt(tf: SignalTf): (symbol: string, timeSec: number) => number | undefined {
+  const cache = new Map<string, readonly { time: number; close: number }[] | null>();
+  return (symbol, timeSec) => {
+    if (!cache.has(symbol)) cache.set(symbol, loadCandles(symbol, tf) ?? null);
+    const candles = cache.get(symbol);
+    if (!candles || candles.length === 0 || timeSec < candles[0].time) return undefined;
+    let lo = 0;
+    let hi = candles.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (candles[mid].time <= timeSec) lo = mid;
+      else hi = mid - 1;
+    }
+    return candles[lo].close;
+  };
 }

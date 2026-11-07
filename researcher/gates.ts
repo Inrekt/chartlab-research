@@ -12,8 +12,10 @@ import {
   statsAfterCosts,
   tradeCostInR,
   DEFAULT_COSTS,
+  scaleCosts,
   type CostAssumptions,
 } from "../src/core/committee/costModel.ts";
+import { fnv1a } from "./hash.ts";
 import { runWalkForward } from "../src/core/committee/walkForward.ts";
 import { wilsonInterval } from "../src/core/committee/wilson.ts";
 import {
@@ -63,22 +65,125 @@ export function gateActivity(perSymbol: readonly SymbolNet[]): GateResult {
 // ── Ворота 2: ширина + отложенный набор ─────────────────────────────────────
 export const BREADTH_SHARE = 0.6;
 export const HOLDOUT_MIN_TRADES = 20;
+/** Единица ширины: символ с ≥ 10 сделками или корзина мелких до ≥ 10. */
+export const BREADTH_UNIT_MIN_TRADES = 10;
+/**
+ * Соль порядка слияния мелких символов в корзины. Равна соли деления
+ * (screen.HALVING_SALT) намеренно: порядок единицы обязан быть одним и тем же
+ * на стадии B и в воротах ширины, иначе одна и та же выборка давала бы разные
+ * доли.
+ */
+export const BREADTH_SALT = 0xc0ffee;
+
+export interface BreadthUnit {
+  /** Символ или `bucket:<первый символ>+<n>` для корзины мелких символов. */
+  id: string;
+  trades: number;
+  /** Чистое матожидание единицы (у корзины — взвешенное числом сделок). */
+  netExpectancy: number;
+  isBucket: boolean;
+}
+
+/**
+ * Единицы ширины (P3, search-v4): доля «в плюсе» по символам с любым числом
+ * сделок была скрытым винрейтом — на символе с одной сделкой она и есть
+ * винрейт. Теперь:
+ *  - символ с ≥ 10 сделками — отдельная единица;
+ *  - остальные сортируются по fnv1a(`соль:символ`) и жадно сливаются в
+ *    корзины по ≥ 10 сделок; остаток < 10 доливается в последнюю корзину;
+ *  - если мелких сделок всего < 10, они в ширину не входят.
+ * Чистая функция: тот же вход и соль всегда дают те же единицы.
+ */
+export function breadthUnits(perSymbol: readonly SymbolNet[], salt: number | string): BreadthUnit[] {
+  const units: BreadthUnit[] = [];
+  const small: SymbolNet[] = [];
+  for (const s of perSymbol) {
+    if (s.trades >= BREADTH_UNIT_MIN_TRADES) {
+      units.push({ id: s.symbol, trades: s.trades, netExpectancy: s.netExpectancy, isBucket: false });
+    } else if (s.trades > 0) {
+      small.push(s);
+    }
+  }
+  small.sort((a, b) => fnv1a(`${salt}:${a.symbol}`) - fnv1a(`${salt}:${b.symbol}`) || (a.symbol < b.symbol ? -1 : 1));
+
+  const buckets: { members: SymbolNet[]; trades: number }[] = [];
+  let current: SymbolNet[] = [];
+  let currentTrades = 0;
+  for (const s of small) {
+    current.push(s);
+    currentTrades += s.trades;
+    if (currentTrades >= BREADTH_UNIT_MIN_TRADES) {
+      buckets.push({ members: current, trades: currentTrades });
+      current = [];
+      currentTrades = 0;
+    }
+  }
+  if (current.length > 0 && buckets.length > 0) {
+    // Остаток < 10 доливается в ПОСЛЕДНЮЮ корзину; без корзин (мелких сделок
+    // всего < 10) он в ширину не входит вовсе.
+    const last = buckets[buckets.length - 1];
+    last.members.push(...current);
+    last.trades += currentTrades;
+  }
+  for (const b of buckets) {
+    const weighted = b.members.reduce((sum, m) => sum + m.netExpectancy * m.trades, 0) / b.trades;
+    units.push({
+      id: `bucket:${b.members[0].symbol}+${b.members.length}`,
+      trades: b.trades,
+      netExpectancy: weighted,
+      isBucket: true,
+    });
+  }
+  return units;
+}
+
+export interface BreadthShare {
+  units: number;
+  buckets: number;
+  positiveUnits: number;
+  share: number;
+  /** Сделки мелких символов, не набравших корзину (< 10 всего) — вне ширины. */
+  droppedTrades: number;
+}
+
+/** Доля единиц в плюсе с полной раскладкой — для журнала и причины смерти. */
+export function breadthShare(perSymbol: readonly SymbolNet[], salt: number | string): BreadthShare {
+  const units = breadthUnits(perSymbol, salt);
+  const positiveUnits = units.filter((u) => u.netExpectancy > 0).length;
+  const counted = units.reduce((sum, u) => sum + u.trades, 0);
+  const total = perSymbol.reduce((sum, s) => sum + s.trades, 0);
+  return {
+    units: units.length,
+    buckets: units.filter((u) => u.isBucket).length,
+    positiveUnits,
+    share: units.length > 0 ? positiveUnits / units.length : 0,
+    droppedTrades: total - counted,
+  };
+}
 
 export function gateBreadth(
   perSymbol: readonly SymbolNet[],
   holdout: { netExpectancy: number; trades: number },
+  salt: number | string = BREADTH_SALT,
 ): GateResult {
   const traded = perSymbol.filter((s) => s.trades > 0);
-  const positive = traded.filter((s) => s.netExpectancy > 0).length;
-  const share = traded.length > 0 ? positive / traded.length : 0;
+  const b = breadthShare(perSymbol, salt);
   const metrics = {
     tradedSymbols: traded.length,
-    positiveShare: Number(share.toFixed(3)),
+    units: b.units,
+    buckets: b.buckets,
+    positiveUnits: b.positiveUnits,
+    droppedTrades: b.droppedTrades,
+    positiveShare: Number(b.share.toFixed(3)),
     holdoutTrades: holdout.trades,
     holdoutNet: Number(holdout.netExpectancy.toFixed(4)),
   };
-  if (share < BREADTH_SHARE) {
-    return fail(`ширина: прибыльна на ${(share * 100).toFixed(0)}% символов < 60%`, metrics);
+  if (b.share < BREADTH_SHARE) {
+    return fail(
+      `ширина: прибыльны ${b.positiveUnits} из ${b.units} единиц (${(b.share * 100).toFixed(0)}%, ` +
+        `корзин ${b.buckets}) < 60%`,
+      metrics,
+    );
   }
   if (holdout.trades < HOLDOUT_MIN_TRADES) {
     return fail(`ширина: на отложенных символах лишь ${holdout.trades} сделок — не проверить`, metrics);
@@ -99,25 +204,20 @@ export function gateBreadth(
  * рассогласование не роняет тесты и ничего не пишет в лог.
  */
 export function stressedCosts(base: CostAssumptions = activeCosts()): CostAssumptions {
-  return {
-    feeRate: base.feeRate * 2,
-    slippageRate: base.slippageRate * 2,
-    slippageFor: base.slippageFor ? (t) => base.slippageFor!(t) * 2 : undefined,
-  };
+  // Поиск v4 (P4): удваиваются тейкер, мейкер и проскальзывание; фандинг —
+  // измеренный, а не допущение, поэтому идёт как есть.
+  return scaleCosts(base, 2);
 }
 
 /** Обратная совместимость: плоский стресс, когда модель по умолчанию. */
-export const STRESSED_COSTS: CostAssumptions = {
-  feeRate: DEFAULT_COSTS.feeRate * 2,
-  slippageRate: DEFAULT_COSTS.slippageRate * 2,
-};
+export const STRESSED_COSTS: CostAssumptions = scaleCosts(DEFAULT_COSTS, 2);
 
 export function gateCostStress(allTrades: readonly TradeResult[]): GateResult {
   const stressed = statsAfterCosts([...allTrades], stressedCosts());
   const metrics = { stressedExpectancy: Number(stressed.expectancy.toFixed(4)) };
   return stressed.expectancy > 0
     ? pass(metrics)
-    : fail("стресс: при 2× издержках (0.20%/сторона) матожидание ≤ 0", metrics);
+    : fail("стресс: при 2× комиссиях и проскальзывании матожидание ≤ 0", metrics);
 }
 
 // ── Ворота 4: плато (принцип Пардо) ─────────────────────────────────────────

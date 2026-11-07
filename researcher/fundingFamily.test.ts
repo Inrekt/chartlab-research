@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, test } from "vitest";
-import { enumerateAll, exitsFor, setupFamily, setupNeighbors, toStrategyConfig } from "./grammar.ts";
+import { enumerateAll, exitMaxBars, exitsFor, setupFamily, setupNeighbors, toStrategyConfig } from "./grammar.ts";
 import { neighborSpecs } from "./screen.ts";
 
 // Перечисление всего пространства запоминается: оно детерминированное, а
@@ -46,7 +46,7 @@ describe("семейство «перегруженное плечо»", () => {
       expect(exits).toHaveLength(9);
       expect(new Set(exits.map((e) => ("stopAtr" in e ? e.stopAtr : null)))).toEqual(new Set([2]));
       expect(new Set(exits.map((e) => ("takeR" in e ? e.takeR : null)))).toEqual(new Set([1, 2, 3]));
-      expect(new Set(exits.map((e) => e.maxBars))).toEqual(new Set([10, 20, 40]));
+      expect(new Set(exits.map((e) => exitMaxBars(e)))).toEqual(new Set([10, 20, 40]));
     }
   });
 

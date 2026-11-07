@@ -160,3 +160,20 @@ describe("добор на скоплениях ликвидности", () => {
     expect(legacy.exitPrice).toBeCloseTo(explicitZero.exitPrice, 12);
   });
 });
+
+describe("лимитный добор: только сквозной проход (P4)", () => {
+  it("касание уровня добора БЕЗ прохода на 1 б.п. — добор не исполняется", () => {
+    const candles = twoLevelsAbove({ 152: [99, 106], 153: [93, 101] });
+    const trade = only(candles, 1);
+    expect(trade.fills!.filter((f) => f.side === "entry")).toHaveLength(1);
+  });
+
+  it("проход выше уровня на 1 б.п. — добор исполняется как мейкер по цене уровня", () => {
+    const candles = twoLevelsAbove({ 152: [99, 106.02], 153: [93, 101] });
+    const trade = only(candles, 1);
+    const entries = trade.fills!.filter((f) => f.side === "entry");
+    expect(entries).toHaveLength(2);
+    expect(entries[1].liquidity).toBe("maker");
+    expect(entries[1].price).toBeCloseTo(106, 9);
+  });
+});

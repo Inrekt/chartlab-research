@@ -280,8 +280,9 @@ if (isMain && arg("mode", "gates") === "dsr") {
   const batches = Number(arg("batches", "400"));
   const seed = Number(arg("seed", "20260804"));
   const tau = Number(arg("tau", "0.03"));
-  const rows = runDsrSweep(batches, seed, tau);
-  console.error(`Партия 600 кандидатов, истинная дисперсия Шарпа ${tau}, N_eff 8500, финалист 4000 сделок`);
+  const counts = arg("counts", "v8");
+  const rows = runDsrSweep(batches, seed, tau, tradeCountSampler(counts));
+  console.error(`Партия 600 кандидатов, истинная дисперсия Шарпа ${tau}, N_eff 8500, финалист 4000 сделок, сделки ${counts}`);
   console.table(rows);
   console.log(JSON.stringify({ mode: "dsr", batches, seed, tau, rows }, null, 1));
 } else if (isMain && arg("mode", "gates") === "oot") {
@@ -372,6 +373,21 @@ function sampleTradeCount(rand: () => number): number {
   return 300 + Math.floor(rand() * 4700);
 }
 
+/**
+ * Поиск v4: стадия A набирает ≥ 150 сделок по символо-годам (с перебором на
+ * последней единице), малые семейства идут на полный пул. Вход дисперсии DSR
+ * поэтому толще, чем в v8; стенд меряет, не вырос ли от этого ложный проход.
+ */
+function sampleTradeCountV9(rand: () => number): number {
+  const u = rand();
+  if (u < 0.85) return 150 + Math.floor(rand() * 150);
+  return 300 + Math.floor(rand() * 4700);
+}
+
+export function tradeCountSampler(version: string): (rand: () => number) => number {
+  return version === "v9" ? sampleTradeCountV9 : sampleTradeCount;
+}
+
 interface DsrRow {
   оценка: string;
   "sr0 (медиана)": number;
@@ -384,7 +400,12 @@ interface DsrRow {
  * какую долю кандидатов пропустят ворота DSR при каждой оценке дисперсии.
  * Кандидат, доходящий до DSR, имеет много сделок — берём T = 4000.
  */
-export function runDsrSweep(batches: number, seed: number, tau = 0.03): DsrRow[] {
+export function runDsrSweep(
+  batches: number,
+  seed: number,
+  tau = 0.03,
+  countSampler: (rand: () => number) => number = sampleTradeCount,
+): DsrRow[] {
   const B = 600;
   const N_EFF = 8500;
   const T_FINAL = 4000;
@@ -399,7 +420,7 @@ export function runDsrSweep(batches: number, seed: number, tau = 0.03): DsrRow[]
     const sharpes: number[] = [];
     const counts: number[] = [];
     for (let i = 0; i < B; i++) {
-      const T = sampleTradeCount(rand);
+      const T = countSampler(rand);
       const trueS = tau * g(); // истинная дисперсия партии
       const noise = Math.sqrt((1 + (trueS * trueS) / 2) / T) * g();
       sharpes.push(trueS + noise);

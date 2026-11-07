@@ -4,6 +4,7 @@ import {
   defaultClusterKey,
   enumerateAll,
   EXITS,
+  exitMaxBars,
   FILTERS,
   filterCombosFor,
   grammarSize,
@@ -109,7 +110,7 @@ describe("mapping to StrategyConfig", () => {
         expect(config.exit.stopLoss).toEqual({ type: "atr", value: rr.stopAtr });
         expect(config.exit.takeProfit).toEqual({ type: "rr", value: rr.takeR });
       }
-      expect(config.exit.maxBarsInTrade).toBe(spec.exit.maxBars);
+      expect(config.exit.maxBarsInTrade).toBe(exitMaxBars(spec.exit));
       if (spec.filters.length === 0) expect(config.filters).toBeUndefined();
       else expect(config.filters!.conditions).toHaveLength(spec.filters.length);
     }
