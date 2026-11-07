@@ -186,6 +186,27 @@ export type ConditionAtom =
    * скользящей истории. Требует символа; без него или без данных — ложь.
    */
   | { kind: "topLongShort"; direction: "long" | "short"; percentile: number; windowDays: number }
+  /**
+   * Свип равных экстремумов: ≥ 2 подтверждённых пивота (`pivotBars` с каждой
+   * стороны) в окне `lookback` баров, хаи (лои) отличаются ≤ `tolAtr`·ATR(14),
+   * уровень цел до текущего бара; бар прокалывает уровень и закрывается
+   * обратно. Цена-only: смысл кубика — контекст для ордерфлоу.
+   * Пре-регистрация: researcher/docs/family-orderflow-sweep-preregistration.md.
+   */
+  | { kind: "equalLevels"; side: "highs" | "lows"; pivotBars: number; lookback: number; tolAtr: number }
+  /**
+   * Дивергенция CVD на свипе равных уровней (те же параметры уровня):
+   * нетто-дельта тейкеров (aggTrades, $) от младшего пивота до бара выноса
+   * ≤ 0 для `highs` и ≥ 0 для `lows`. Без свипа на баре — ложь. Требует
+   * символа и полного 15m-ордерфлоу на всех барах отрезка.
+   */
+  | { kind: "orderflowDelta"; side: "highs" | "lows"; pivotBars: number; lookback: number; tolAtr: number }
+  /**
+   * Поглощение бара по ордерфлоу: absorb = (дельта/объём)·(1 − |c−o|/(h−l));
+   * `buy` — absorb > 0 и ранг ≥ `percentile` среди ПРОШЛЫХ баров окна
+   * `windowDays`, `sell` — absorb < 0 и ранг ≤ 100 − `percentile`.
+   */
+  | { kind: "absorption"; direction: "buy" | "sell"; percentile: number; windowDays: number }
   | {
       kind: "forcedFlow";
       direction: "deleverageLong" | "deleverageShort";

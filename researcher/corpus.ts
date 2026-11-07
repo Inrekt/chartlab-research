@@ -15,6 +15,7 @@ import type { Candle } from "../src/core/types/index.ts";
 import { useCsvFunding } from "./fundingCsv.ts";
 import { useCsvMetrics } from "./metricsCsv.ts";
 import { useCsvFlow } from "./flowCsv.ts";
+import { useCsvOrderflow } from "./orderflowCsv.ts";
 import type { SignalTf } from "./grammar.ts";
 import { fnv1a } from "./hash.ts";
 
@@ -25,6 +26,7 @@ import { fnv1a } from "./hash.ts";
 useCsvFunding();
 useCsvMetrics();
 useCsvFlow();
+useCsvOrderflow();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 /**

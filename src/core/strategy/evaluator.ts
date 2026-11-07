@@ -10,6 +10,11 @@ import {
 } from "../metrics/metricsSeries";
 import { cachedForcedFlowSeries } from "../flow/flowSeries";
 import {
+  cachedAbsorptionPercentile,
+  cachedEqualLevelSweeps,
+  cvdDivergenceAt,
+} from "../orderflow/orderflowSeries";
+import {
   adx,
   atr as atrIndicator,
   atrChannel,
@@ -453,6 +458,22 @@ export class EvaluationContext {
       const rank = cachedTopLongSharePercentile(this.candles, this.symbol, atom.windowDays)[index];
       if (!Number.isFinite(rank)) return false;
       return atom.direction === "long" ? rank >= atom.percentile : rank <= 100 - atom.percentile;
+    }
+    if (atom.kind === "equalLevels") {
+      return cachedEqualLevelSweeps(this.candles, atom)[index] >= 0;
+    }
+    if (atom.kind === "orderflowDelta") {
+      if (!this.symbol) return false;
+      const sweeps = cachedEqualLevelSweeps(this.candles, atom);
+      return cvdDivergenceAt(this.candles, this.symbol, sweeps, atom.side, index);
+    }
+    if (atom.kind === "absorption") {
+      if (!this.symbol) return false;
+      const { absorb, rank } = cachedAbsorptionPercentile(this.candles, this.symbol, atom.windowDays);
+      const a = absorb[index];
+      const r = rank[index];
+      if (!Number.isFinite(a) || !Number.isFinite(r)) return false;
+      return atom.direction === "buy" ? a > 0 && r >= atom.percentile : a < 0 && r <= 100 - atom.percentile;
     }
     if (atom.kind === "forcedFlow") {
       if (!this.symbol) return false;
