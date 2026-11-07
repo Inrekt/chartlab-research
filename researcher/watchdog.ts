@@ -17,7 +17,84 @@
  * GitHub отключает расписания за отсутствие АКТИВНОСТИ, а тик публикует
  * статус в репозиторий каждый час, то есть активность есть и так. А если
  * встанут все воркфлоу — встанет и сам keep-alive, спасти себя он не может.
+ *
+ * Контур на маке (с 2026-08-19). Облачных расписаний больше нет, а ночь
+ * зависит от питания: на батарее она пропускается. Поэтому сторож не только
+ * считает часы, но и называет причину — по отметкам, которые оставляет
+ * ночной скрипт мака (`ops/mac/bin/nightly.sh`, каталог ~/.chartlab/state).
  */
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+/** Куда смотреть, когда ночь молчит. */
+const NIGHT_LOG = "~/.chartlab/logs/nightly.log";
+
+/** Что ночной скрипт мака успел сделать — по его отметкам. */
+export interface NightAttempts {
+  /** Последний старт ночи (на питании, под замком). */
+  lastStartIso: string | null;
+  /** Последнее завершение скрипта и код перебора. */
+  lastEnd: { iso: string; code: number } | null;
+  /** Последний пропуск из-за батареи. */
+  lastBatterySkipIso: string | null;
+}
+
+const NO_ATTEMPTS: NightAttempts = { lastStartIso: null, lastEnd: null, lastBatterySkipIso: null };
+
+/** Последнее слово строки-отметки — ISO; пустой/битый файл ⇒ null. */
+function readStamp(path: string): string[] | null {
+  if (!existsSync(path)) return null;
+  const parts = readFileSync(path, "utf-8").trim().split(/\s+/);
+  return parts.length > 0 && parts[0] !== "" ? parts : null;
+}
+
+/**
+ * Отметки ночного скрипта. Форматы (по строке, поля через пробел):
+ * night-started `ДАТА ЭПОХА ISO`, night-ended `ISO КОД`,
+ * night-battery-skip `ДАТА ISO`.
+ */
+export function readNightAttempts(dir: string): NightAttempts {
+  try {
+    const started = readStamp(join(dir, "night-started"));
+    const ended = readStamp(join(dir, "night-ended"));
+    const battery = readStamp(join(dir, "night-battery-skip"));
+    const code = ended && ended.length >= 2 ? Number(ended[1]) : NaN;
+    return {
+      lastStartIso: started ? started[started.length - 1]! : null,
+      lastEnd: ended && Number.isFinite(code) ? { iso: ended[0]!, code } : null,
+      lastBatterySkipIso: battery ? battery[battery.length - 1]! : null,
+    };
+  } catch {
+    return NO_ATTEMPTS;
+  }
+}
+
+const after = (iso: string | null, ref: number): boolean =>
+  iso !== null && Number.isFinite(Date.parse(iso)) && Date.parse(iso) > ref;
+
+/** Почему молчит: по попыткам ПОСЛЕ последней удачной ночи. */
+function silenceCause(a: NightAttempts, lastOk: number): string {
+  if (a.lastEnd && a.lastEnd.code !== 0 && after(a.lastEnd.iso, lastOk)) {
+    return `Причина: ночь упала (код ${a.lastEnd.code}, ${a.lastEnd.iso}). Причина — в ${NIGHT_LOG}.`;
+  }
+  const endMs = a.lastEnd ? Date.parse(a.lastEnd.iso) : -Infinity;
+  if (after(a.lastStartIso, lastOk) && !(endMs >= Date.parse(a.lastStartIso!))) {
+    return (
+      `Ночь началась (${a.lastStartIso}) и оборвалась, не дойдя до конца — ` +
+      `сон, выключение или убитый процесс. Смотреть ${NIGHT_LOG}.`
+    );
+  }
+  if (after(a.lastBatterySkipIso, lastOk)) {
+    return (
+      `Мак не был на зарядке: ночь пропускалась на батарее (последний раз ` +
+      `${a.lastBatterySkipIso}). Подключи питание — ночь стартует в течение часа.`
+    );
+  }
+  return (
+    "Попыток запуска не видно вовсе: проверить `launchctl list | grep chartlab` " +
+    `и ${NIGHT_LOG}.`
+  );
+}
 
 /** Ночь по расписанию — 21:37 UTC, то есть раз в 24 часа. */
 const NIGHT_PERIOD_HOURS = 24;
@@ -51,6 +128,7 @@ export interface SilenceVerdict {
 export function nightSilenceVerdict(
   lastNightIso: string | null,
   now: Date = new Date(),
+  attempts: NightAttempts = NO_ATTEMPTS,
 ): SilenceVerdict {
   if (!lastNightIso) {
     // Отметки нет: либо журнал новый, либо сторож включён между ночами.
@@ -94,10 +172,7 @@ export function nightSilenceVerdict(
       (level === "fail" ? "🚨 НОЧЬ НЕ ЗАПУСКАЛАСЬ" : "⚠️ ночь пропущена") +
       `: ${hoursSince.toFixed(1)} ч с последнего полного прогона ` +
       `(пропущено ночей: ${missed}, последняя ${lastNightIso}).` +
-      (level === "fail"
-        ? "\nДве ночи подряд — это не сбой раннера, а мёртвое расписание. " +
-          "Проверить: gh run list --workflow='Nightly research'; " +
-          "GitHub отключает расписания молча."
-        : ""),
+      "\n" +
+      silenceCause(attempts, last),
   };
 }

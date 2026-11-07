@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,6 +58,19 @@ function fakeCorpus(n: number, lastIso?: string): string {
 /** ISO-время «N суток назад» от фиксированной точки отсчёта тестов. */
 const NOW = Date.parse("2026-08-09T12:00:00.000Z");
 const daysAgo = (d: number) => new Date(NOW - d * 86_400_000).toISOString();
+
+/*
+ * Проверка свежести берёт системные часы, а фикстуры строятся от NOW. Без
+ * подмены часов тест сам покраснел через 14 суток после написания (ноябрь
+ * 2026: «корпус просрочен, 90.8 сут») — то есть проверял календарь, а не код.
+ */
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("предполётная проверка источников", () => {
   it("ловит РОВНО ту аварию, что случилась: каталога фандинга нет", () => {

@@ -8,10 +8,10 @@ import { corpusCandleSource, runIncubation, type CandleSource } from "./incubate
 import { ExchangeBlockedError, fetchBinanceKlines } from "./binance.ts";
 import { collectWhaleSnapshot } from "./hlWhales.ts";
 import { writeStatus } from "./statusFile.ts";
-import { DB_PATH, DEFAULT_VAULT_DIR } from "./paths.ts";
+import { DB_PATH, DEFAULT_VAULT_DIR, NIGHT_STATE_DIR } from "./paths.ts";
 import { assertDataSources, corpusFreshnessVerdict } from "./preflight.ts";
 import { runSupervision } from "./supervise.ts";
-import { nightSilenceVerdict } from "./watchdog.ts";
+import { nightSilenceVerdict, readNightAttempts } from "./watchdog.ts";
 import { TrialLedger } from "./ledger.ts";
 
 /** Отметку ставит только ДОШЕДШАЯ ДО КОНЦА ночь — см. ledger.markNightCompleted. */
@@ -116,7 +116,13 @@ const supervision = await runSupervision({
 // состоялась, 07.08 опоздала на 3.5 часа), и машина, не работавшая сутки,
 // выглядит как машина, которой нечего делать. Тик — единственный процесс с
 // независимым расписанием, поэтому сторожем назначен он.
-const silence = nightSilenceVerdict(readLastNightCompleted());
+// Контур на маке: причину тишины (батарея / падение / обрыв) берём из
+// отметок ночного скрипта, а не отправляем владельца в GitHub.
+const silence = nightSilenceVerdict(
+  readLastNightCompleted(),
+  new Date(),
+  readNightAttempts(NIGHT_STATE_DIR),
+);
 if (silence.level !== "ok") log(silence.message);
 
 // screens: [] ⇒ воронка последней ночи переносится из предыдущего статуса.

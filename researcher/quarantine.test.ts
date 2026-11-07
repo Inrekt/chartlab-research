@@ -228,3 +228,66 @@ describe("возврат состояния (дефект боевой ночи 
     ledger.close();
   });
 });
+
+describe("карантин освобождает испытание ОДИН раз (падения ночей с 2026-08-20)", () => {
+  /*
+   * Карантин отбирал испытания по окну `created_at` — навсегда. Перемеренное
+   * испытание остаётся в окне (дата регистрации не меняется), поэтому каждую
+   * ночь снова попадало в пул, сэмплер брал его (другого пространства не
+   * было), и скрин падал на «запрещённый переход REJECTED → REJECTED». 216
+   * испытаний funding_pressure, перемеренные 2026-08-19, дали 13 красных ночей.
+   * Карантин значит «тот вердикт измерением не был» — к вердикту, вынесенному
+   * ПОСЛЕ карантина, это не относится.
+   */
+  test("перемеренное после карантина испытание снова закрывает комбинацию", () => {
+    let clock = "2026-08-09T21:37:00.000Z";
+    const ledger = new TrialLedger(freshDb(), { now: () => clock });
+    ledger.registerCandidates(sampleCandidates(7, 5, undefined, { tf: "4h" }));
+    const rows = ledger.byState("CANDIDATE");
+    const family = ledger.getTrial(rows[0]!.candidateId)!.setupFamily;
+    const mine = rows.filter((r) => ledger.getTrial(r.candidateId)!.setupFamily === family);
+    for (const r of mine) {
+      ledger.recordEval(r.candidateId, "halving_16", { trades: 0 });
+      ledger.transition(r.candidateId, "REJECTED", "нуль сделок");
+    }
+
+    clock = "2026-08-18T10:00:00.000Z";
+    ledger.quarantineEpoch(family, "2026-08-09", "2026-08-09", "источник данных отсутствовал");
+    for (const r of mine) expect(ledger.resamplableExclusions().has(r.candidateId)).toBe(false);
+
+    // Ночь 2026-08-19: честный перемер, новый вердикт.
+    clock = "2026-08-19T21:37:00.000Z";
+    for (const r of mine) {
+      ledger.recordEval(r.candidateId, "halving_16", { trades: 40 });
+      ledger.transition(r.candidateId, "REJECTED", "перемер");
+    }
+
+    const excluded = ledger.resamplableExclusions();
+    const quarantined = ledger.quarantinedIds();
+    for (const r of mine) {
+      expect(excluded.has(r.candidateId), r.candidateId).toBe(true);
+      expect(quarantined.has(r.candidateId), r.candidateId).toBe(false);
+    }
+    // Починка не должна снова вытаскивать честный вердикт в пул.
+    clock = "2026-08-20T21:37:00.000Z";
+    expect(ledger.repairQuarantinedStates()).toBe(0);
+    for (const r of mine) expect(ledger.getTrial(r.candidateId)!.state).toBe("REJECTED");
+    ledger.close();
+  });
+
+  test("неперемеренное испытание из окна остаётся свободным", () => {
+    let clock = "2026-08-09T21:37:00.000Z";
+    const ledger = new TrialLedger(freshDb(), { now: () => clock });
+    ledger.registerCandidates(sampleCandidates(7, 5, undefined, { tf: "4h" }));
+    const rows = ledger.byState("CANDIDATE");
+    const family = ledger.getTrial(rows[0]!.candidateId)!.setupFamily;
+    const mine = rows.filter((r) => ledger.getTrial(r.candidateId)!.setupFamily === family);
+    for (const r of mine) ledger.recordEval(r.candidateId, "halving_16", { trades: 0 });
+
+    clock = "2026-08-18T10:00:00.000Z";
+    ledger.quarantineEpoch(family, "2026-08-09", "2026-08-09", "источник данных отсутствовал");
+    clock = "2026-08-25T00:00:00.000Z";
+    for (const r of mine) expect(ledger.quarantinedIds().has(r.candidateId)).toBe(true);
+    ledger.close();
+  });
+});
