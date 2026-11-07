@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.chartlab.researcher.nightly</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/zsh</string>
+		<string>/Users/user/.chartlab/bin/nightly.sh</string>
+	</array>
+	<!-- Каждый час: сам скрипт решает, пора ли (первое пробуждение на питании
+	     за сутки). Прежние 02:37 почти всегда приходились на батарею. -->
+	<key>StartInterval</key>
+	<integer>3600</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>LowPriorityBackgroundIO</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/user/.chartlab/logs/nightly-launchd.log</string>
+</dict>
+</plist>

@@ -667,14 +667,31 @@ export class TrialLedger {
     return { affected: rows.length, freed, alreadyFree: rows.length - freed };
   }
 
-  /** Испытания, попавшие под карантин. */
+  /**
+   * Испытания, которым карантин ещё ДОЛЖЕН перемер.
+   *
+   * Карантин говорит «вердикт, вынесенный в отравленную эпоху, измерением не
+   * был» — и ничего не говорит о вердикте, вынесенном ПОСЛЕ него. Раньше отбор
+   * шёл только по окну `created_at`, а дата регистрации при перемере не
+   * меняется: перемеренное испытание навсегда оставалось «карантинным»,
+   * каждую ночь снова уходило в пул, и скрин падал на
+   * «запрещённый переход REJECTED → REJECTED» (13 красных ночей с 2026-08-20
+   * на 216 испытаниях funding_pressure, перемеренных 2026-08-19).
+   *
+   * Поэтому испытание освобождается, только пока у него нет оценки новее
+   * записи карантина: одна отравленная эпоха — один перемер.
+   */
   quarantinedIds(): Set<string> {
     const rows = this.db
       .prepare(
-        `SELECT t.candidate_id FROM trials t JOIN quarantine q
+        `SELECT DISTINCT t.candidate_id FROM trials t JOIN quarantine q
            ON t.setup_family = q.setup_family
           AND t.created_at >= q.from_iso
-          AND t.created_at <= q.to_iso`,
+          AND t.created_at <= q.to_iso
+          WHERE NOT EXISTS (
+            SELECT 1 FROM evals e
+             WHERE e.candidate_id = t.candidate_id AND e.created_at > q.created_at
+          )`,
       )
       .all() as { candidate_id: string }[];
     return new Set(rows.map((r) => r.candidate_id));

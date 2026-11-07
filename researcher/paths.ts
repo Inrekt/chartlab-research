@@ -40,5 +40,7 @@ export const DEFAULT_VAULT_DIR =
  * приложении. Лежит ОТДЕЛЬНО от журнала: журнал приватен, статус обезличен и
  * коммитится в публичный репозиторий (см. status.ts).
  */
+/** Отметки ночного скрипта мака (старт, конец, пропуск на батарее) — для сторожа. */
+export const NIGHT_STATE_DIR = process.env.RESEARCHER_NIGHT_STATE_DIR ?? join(CHARTLAB_HOME, "state");
 export const STATUS_DIR = process.env.RESEARCHER_STATUS_DIR ?? join(CHARTLAB_HOME, "status");
 export const STATUS_PATH = join(STATUS_DIR, "status.json");
