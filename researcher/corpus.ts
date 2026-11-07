@@ -16,6 +16,7 @@ import { useCsvFunding } from "./fundingCsv.ts";
 import { useCsvMetrics } from "./metricsCsv.ts";
 import { useCsvFlow } from "./flowCsv.ts";
 import type { SignalTf } from "./grammar.ts";
+import { fnv1a } from "./hash.ts";
 
 // Через корпус проходит ЛЮБОЙ исследовательский вход, поэтому источник ставок
 // фандинга подключается здесь. Подключать его в каждой точке входа отдельно —
@@ -68,15 +69,6 @@ export function listUniverse(tf: SignalTf, historyDir = HISTORY_DIR): string[] {
     .filter((f) => f.endsWith(suffix))
     .map((f) => f.slice(0, -suffix.length))
     .sort();
-}
-
-function fnv1a(text: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h >>> 0;
 }
 
 export interface UniverseSplit {

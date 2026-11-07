@@ -15,13 +15,25 @@ import { computeStats } from "../backtest/stats";
  * it is a setup that loses money.
  */
 
-/** Binance spot taker is 0.10% a side; 0.05% covers a typical maker/BNB path. */
-export const DEFAULT_FEE_RATE = 0.0005;
+/** Перп Binance USDT-M: тейкер 5 б.п. за сторону (рыночный вход, стоп, время). */
+export const TAKER_FEE_RATE = 0.0005;
+/** Перп Binance USDT-M: мейкер 2 б.п. за сторону (лимитки: тейк, частичная фиксация, добор). */
+export const MAKER_FEE_RATE = 0.0002;
+/** Совместимость: прежнее имя — это тейкер. */
+export const DEFAULT_FEE_RATE = TAKER_FEE_RATE;
 /** Slippage on a liquid pair at retail size. Deliberately not optimistic. */
 export const DEFAULT_SLIPPAGE_RATE = 0.0005;
 
 export interface CostAssumptions {
+  /** Комиссия тейкера за сторону. */
   feeRate: number;
+  /** Комиссия мейкера за сторону; нет — `MAKER_FEE_RATE`. */
+  makerFeeRate?: number;
+  /**
+   * Фандинг сделки в R: положительное — заплачено, отрицательное — получено.
+   * Измеренная величина: стресс ×2 её НЕ удваивает (см. `scaleCosts`).
+   */
+  fundingFor?: (trade: TradeResult) => number;
   slippageRate: number;
   /**
    * Проскальзывание для КОНКРЕТНОЙ сделки, если оно известно точнее плоской
@@ -123,8 +135,34 @@ export function tradeCostInR(trade: TradeResult, costs: CostAssumptions = active
     : Math.abs(trade.entryPrice - trade.stopPrice);
   if (!Number.isFinite(riskDistance) || riskDistance <= 0) return 0;
   const slippage = costs.slippageFor?.(trade) ?? costs.slippageRate;
+  const funding = costs.fundingFor?.(trade) ?? 0;
+  if (trade.fills && trade.fills.length > 0) {
+    // По ногам: лимитка — комиссия мейкера без проскальзывания, рынок —
+    // комиссия тейкера плюс проскальзывание.
+    const maker = costs.makerFeeRate ?? MAKER_FEE_RATE;
+    let notionalCost = 0;
+    for (const fill of trade.fills) {
+      const rate = fill.liquidity === "maker" ? maker : costs.feeRate + slippage;
+      notionalCost += rate * fill.price * fill.qty;
+    }
+    return notionalCost / riskDistance + funding;
+  }
   const roundTripRate = 2 * (costs.feeRate + slippage);
-  return (roundTripRate * trade.entryPrice) / riskDistance;
+  return (roundTripRate * trade.entryPrice) / riskDistance + funding;
+}
+
+/**
+ * Масштабирует комиссии и проскальзывание (стресс ×k), оставляя фандинг как
+ * измерен: это деньги, а не допущение об исполнении.
+ */
+export function scaleCosts(base: CostAssumptions, k: number): CostAssumptions {
+  return {
+    feeRate: base.feeRate * k,
+    makerFeeRate: (base.makerFeeRate ?? MAKER_FEE_RATE) * k,
+    slippageRate: base.slippageRate * k,
+    slippageFor: base.slippageFor ? (t) => base.slippageFor!(t) * k : undefined,
+    fundingFor: base.fundingFor,
+  };
 }
 
 /**

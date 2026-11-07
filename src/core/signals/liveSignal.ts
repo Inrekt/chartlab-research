@@ -73,7 +73,8 @@ export function detectSignal(
     stopPrice: levels.stopPrice,
     targetPrice: levels.targetPrice,
     riskPerUnit: levels.risk,
-    rewardToRisk: levels.risk > 0 ? reward / levels.risk : 0,
+    // Без тейка (трейлинг/выход по времени, поиск v4) цель = ±∞: R/R не определён.
+    rewardToRisk: levels.risk > 0 && Number.isFinite(reward) ? reward / levels.risk : 0,
     levelsMoveWithEntry: config.exit.stopLoss.type !== "liquidity",
   };
 }

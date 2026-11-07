@@ -230,6 +230,46 @@ export function runNullGauntlet(runs: number, seed: number, tf: SignalTf): NullG
   return { runs: specs.length, perGate, fullPasses };
 }
 
+// ── Подсаженные края для ширины (поиск v4, P3) ─────────────────────────────
+/**
+ * Два контрольных края из docs/search-v4-preregistration.md (P3):
+ * - «35% винрейт, выигрыш 3R» (+0.40R) — обязан ПРОХОДИТЬ ширину;
+ * - «75% винрейт, +0.5R / −1.6R» (левый хвост, −0.025R) — обязан НЕ проходить.
+ * Мир редкий, как у свинговых входов: на 80% символов 1–3 сделки, на 20% —
+ * 10–20. Отложенный набор подставлен заведомо проходной, чтобы мерить только
+ * долю плюсовых единиц. Рядом — старое правило «по символам с любым числом
+ * сделок» для сравнения.
+ */
+export interface PlantedBreadth {
+  edge: string;
+  passRate: number;
+  oldRulePassRate: number;
+}
+
+export function plantedBreadthCheck(reps: number, seed: number): PlantedBreadth[] {
+  const edges = [
+    { edge: "35% винрейт, 3R", p: 0.35, win: 3, loss: -1 },
+    { edge: "75% винрейт, левый хвост", p: 0.75, win: 0.5, loss: -1.6 },
+  ];
+  return edges.map(({ edge, p, win, loss }) => {
+    const rand = mulberry32(seed);
+    let pass = 0;
+    let passOld = 0;
+    for (let rep = 0; rep < reps; rep++) {
+      const perSymbol = Array.from({ length: 300 }, (_, i) => {
+        const n = rand() < 0.8 ? 1 + Math.floor(rand() * 3) : 10 + Math.floor(rand() * 11);
+        let sum = 0;
+        for (let k = 0; k < n; k++) sum += rand() < p ? win : loss;
+        return { symbol: `P${i}`, trades: n, netExpectancy: sum / n };
+      });
+      if (gateBreadth(perSymbol, { netExpectancy: 1, trades: 100 }).pass) pass += 1;
+      const oldShare = perSymbol.filter((s) => s.netExpectancy > 0).length / perSymbol.length;
+      if (oldShare >= 0.6) passOld += 1;
+    }
+    return { edge, passRate: pass / reps, oldRulePassRate: passOld / reps };
+  });
+}
+
 // ── CLI ───────────────────────────────────────────────────────────────────────
 function main(): void {
   const argv = process.argv.slice(2);
@@ -256,7 +296,14 @@ function main(): void {
   console.error(
     `Нуль-гаунтлет: полных проходов ${gauntlet.fullPasses}/${gauntlet.runs} (ожидание 0)`,
   );
-  console.log(JSON.stringify({ sprt, gauntlet }, null, 2));
+  const planted = plantedBreadthCheck(200, seed);
+  for (const r of planted) {
+    console.error(
+      `Ширина, край «${r.edge}»: проходит ${(r.passRate * 100).toFixed(0)}% ` +
+        `(старое правило ${(r.oldRulePassRate * 100).toFixed(0)}%)`,
+    );
+  }
+  console.log(JSON.stringify({ sprt, gauntlet, planted }, null, 2));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

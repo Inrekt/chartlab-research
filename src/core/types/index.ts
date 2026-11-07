@@ -215,8 +215,15 @@ export interface StrategyConfig {
      * уровня: толпа целится в сам уровень, поэтому исполнение там худшее.
      * Нет скопления впереди — сделка не открывается вовсе (цели нет).
      */
-    takeProfit: { type: "rr" | "percent" | "fixed" | "liquidity"; value: number };
+    takeProfit: { type: "rr" | "percent" | "fixed" | "liquidity" | "none"; value: number };
     maxBarsInTrade?: number;
+    /**
+     * Трейлинг-стоп (поиск v4, свинговые выходы): стоп подтягивается к
+     * «лучшее закрытие − atr·ATR» (шорт зеркально) по закрытию бара и действует
+     * со следующего бара; только в сторону сделки. Обычно с `takeProfit.type
+     * === "none"`. См. researcher/docs/search-v4-preregistration.md.
+     */
+    trailingStop?: { atr: number };
     /**
      * Доборы: сколько раз позиция доливается на скоплениях ликвидности ПРОТИВ
      * сделки (0, 1 или 2). Уровни фиксируются в момент входа — ближнее и
@@ -278,6 +285,28 @@ export interface TradeResult {
   riskBudget: number;
   won: boolean;
   barsHeld: number;
+  /**
+   * Поиск v4 (P4): почему закрыта сделка. Трейлинг закрывается как "stop".
+   * Нет поля — сделка старого движка, издержки по прежней формуле.
+   */
+  exitReason?: "stop" | "target" | "time" | "end";
+  /**
+   * Поиск v4 (P4): все исполнения сделки. `qty` — в тех же единицах объёма,
+   * что и `riskBudget` (на единичный объём первого входа), так что издержка
+   * ноги в R = ставка·price·qty / riskBudget. maker — лимитка (тейк, частичная
+   * фиксация, добор): комиссия мейкера, без проскальзывания; taker — рынок
+   * (вход, стоп, время, трейлинг): комиссия тейкера + проскальзывание.
+   */
+  fills?: readonly TradeFill[];
+}
+
+export interface TradeFill {
+  side: "entry" | "exit";
+  price: number;
+  qty: number;
+  liquidity: "maker" | "taker";
+  /** Время исполнения, unix-секунды (как Candle.time) — для списания фандинга. */
+  time: number;
 }
 
 export interface BacktestStats {

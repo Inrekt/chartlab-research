@@ -1,7 +1,24 @@
-import type { Candle, StrategyConfig, TradeResult } from "../types";
+import type { Candle, StrategyConfig, TradeFill, TradeResult } from "../types";
 import { EvaluationContext, sharedSeriesCacheFor } from "../strategy/evaluator";
 import { cachedLiquidityFeatures, type LiquidityFeatures } from "../liquidations/clusterSeries";
 import { atr as atrIndicator } from "../indicators";
+
+/**
+ * Сквозной проход (P4): лимитная заявка исполняется, только если цена прошла
+ * СКВОЗЬ уровень на 1 б.п., а не просто коснулась его — на касании очередь
+ * впереди нас, и исполнения может не быть. Касание без прохода — сделка
+ * продолжается. Пре-регистрация: researcher/docs/search-v4-preregistration.md.
+ */
+export const PASS_THROUGH_RATE = 0.0001;
+
+/** Лонговая лимитка на продажу (тейк): максимум бара обязан пройти выше уровня. */
+function passedUp(bar: Candle, level: number): boolean {
+  return bar.high >= level * (1 + PASS_THROUGH_RATE);
+}
+/** Шортовая лимитка на покупку (тейк): минимум бара обязан пройти ниже уровня. */
+function passedDown(bar: Candle, level: number): boolean {
+  return bar.low <= level * (1 - PASS_THROUGH_RATE);
+}
 
 interface PendingAdd {
   price: number;
@@ -34,6 +51,10 @@ interface OpenPosition {
   realizedPnl: number;
   /** Цена частичного тейка; null — сопровождение не задано или уже сработало. */
   scaleOutPrice: number | null;
+  /** Исполнения сделки — для издержек по ногам (мейкер/тейкер). */
+  fills: TradeFill[];
+  /** Лучшее закрытие с момента входа — база трейлинга; null до первого бара. */
+  bestClose: number | null;
 }
 
 /**
@@ -55,7 +76,7 @@ export function runBacktest(candles: Candle[], config: StrategyConfig, symbol: s
 
   for (let i = 0; i < candles.length - 1; i++) {
     if (open) {
-      const closed = advanceOpenPosition(candles, config, symbol, open, i);
+      const closed = advanceOpenPosition(candles, config, symbol, open, i, atrSeries);
       if (closed) {
         trades.push(closed);
         open = null;
@@ -103,7 +124,7 @@ export function simulateExits(
 
   for (let i = 0; i < candles.length - 1; i++) {
     if (open) {
-      const closed = advanceOpenPosition(candles, config, symbol, open, i);
+      const closed = advanceOpenPosition(candles, config, symbol, open, i, atrSeries);
       if (closed) {
         trades.push(closed);
         open = null;
@@ -117,7 +138,8 @@ export function simulateExits(
 }
 
 export function atrSeriesFor(candles: Candle[], config: StrategyConfig): (number | null)[] | null {
-  if (config.exit.stopLoss.type !== "atr") return null;
+  // Трейлинг меряет шаг тем же ATR(14), что и стоп по ATR.
+  if (config.exit.stopLoss.type !== "atr" && !config.exit.trailingStop) return null;
   // ATR(14) не зависит от конфига вообще — но пересчитывался на КАЖДОГО
   // кандидата (2000 раз на символ за ночь). Живёт в общем кэше серий символа.
   const cache = sharedSeriesCacheFor(candles);
@@ -205,7 +227,12 @@ export function planEntryLevels(
 
   // ── Цель ────────────────────────────────────────────────────────────────
   let targetPrice: number;
-  if (config.exit.takeProfit.type === "liquidity") {
+  if (config.exit.takeProfit.type === "none") {
+    // Цели нет: выходит стоп (в т.ч. трейлинг) или время. Бесконечность —
+    // чтобы ни одно сравнение «цена дошла до цели» не сработало; ветка
+    // «нет магнита — нет сделки» относится только к liquidity.
+    targetPrice = long ? Infinity : -Infinity;
+  } else if (config.exit.takeProfit.type === "liquidity") {
     const atrValue = liq?.atrAt[signalIndex] ?? NaN;
     if (!Number.isFinite(atrValue) || atrValue <= 0) return null;
     const near = long ? liq!.nearAbove[signalIndex] : liq!.nearBelow[signalIndex];
@@ -274,6 +301,10 @@ function openPositionAt(
     riskBudget: levels.risk,
     pendingAdds: plan.adds,
     realizedPnl: 0,
+    fills: [
+      { side: "entry", price: entryPrice, qty: plan.firstWeight, liquidity: "taker", time: fillBar.time },
+    ],
+    bestClose: null,
     // Уровень частичного тейка отсчитывается от ПЕРВОГО входа и ширины стопа
     // на единичном объёме — той же линейки, что и знаменатель R. Иначе
     // варианты с добором и без него мерились бы разными «R».
@@ -336,13 +367,15 @@ function fillPendingAdds(open: OpenPosition, bar: Candle): void {
 
   const stillPending: PendingAdd[] = [];
   for (const add of open.pendingAdds) {
-    const touched = open.direction === "long" ? bar.low <= add.price : bar.high >= add.price;
+    // Только сквозной проход (см. PASS_THROUGH_RATE): касание лимитки не заполняет.
+    const touched = open.direction === "long" ? passedDown(bar, add.price) : passedUp(bar, add.price);
     if (!touched) {
       stillPending.push(add);
       continue;
     }
     open.units += add.weight;
     open.costBasis += add.weight * add.price;
+    open.fills.push({ side: "entry", price: add.price, qty: add.weight, liquidity: "maker", time: bar.time });
   }
   open.pendingAdds = stillPending;
 }
@@ -354,12 +387,13 @@ function advanceOpenPosition(
   symbol: string,
   open: OpenPosition,
   index: number,
+  atrSeries: (number | null)[] | null = null,
 ): TradeResult | null {
   const bar = candles[index];
   open.barsHeld += 1;
 
   const hitStop = open.direction === "long" ? bar.low <= open.stopPrice : bar.high >= open.stopPrice;
-  const hitTarget = open.direction === "long" ? bar.high >= open.targetPrice : bar.low <= open.targetPrice;
+  const hitTarget = open.direction === "long" ? passedUp(bar, open.targetPrice) : passedDown(bar, open.targetPrice);
   const timedOut = config.exit.maxBarsInTrade != null && open.barsHeld >= config.exit.maxBarsInTrade;
 
   // Внутрибарный порядок тиков неизвестен, и от него зависит результат.
@@ -386,7 +420,7 @@ function advanceOpenPosition(
    */
   if (open.scaleOutPrice !== null && !hitStop) {
     const reached =
-      open.direction === "long" ? bar.high >= open.scaleOutPrice : bar.low <= open.scaleOutPrice;
+      open.direction === "long" ? passedUp(bar, open.scaleOutPrice) : passedDown(bar, open.scaleOutPrice);
     if (reached) {
       const so = config.exit.scaleOut!;
       const closedUnits = open.units * so.fraction;
@@ -395,6 +429,13 @@ function advanceOpenPosition(
         open.direction === "long"
           ? closedUnits * (open.scaleOutPrice - avgEntry)
           : closedUnits * (avgEntry - open.scaleOutPrice);
+      open.fills.push({
+        side: "exit",
+        price: open.scaleOutPrice,
+        qty: closedUnits,
+        liquidity: "maker",
+        time: bar.time,
+      });
       open.units -= closedUnits;
       open.costBasis = open.units * avgEntry;
       open.scaleOutPrice = null;
@@ -402,7 +443,10 @@ function advanceOpenPosition(
     }
   }
 
-  if (!hitStop && !hitTarget && !timedOut) return null;
+  if (!hitStop && !hitTarget && !timedOut) {
+    advanceTrailingStop(config, open, bar, atrSeries?.[index] ?? null);
+    return null;
+  }
   // Гэп через стоп исполняется по ОТКРЫТИЮ, а не по цене стопа: если бар
   // открылся уже за стопом (каскад ликвидаций, ночная новость, разрыв
   // выходных на FX), цены стопа в этом баре не существовало, и выйти по
@@ -416,7 +460,30 @@ function advanceOpenPosition(
       ? Math.min(bar.open, open.stopPrice)
       : Math.max(bar.open, open.stopPrice);
   const exitPrice = hitStop ? stopFill : hitTarget ? open.targetPrice : bar.close;
-  return closeTrade(symbol, open, bar.time, exitPrice);
+  const exitReason = hitStop ? "stop" : hitTarget ? "target" : "time";
+  return closeTrade(symbol, open, bar.time, exitPrice, exitReason);
+}
+
+/**
+ * Трейлинг-стоп: по закрытию бара стоп подтягивается к «лучшее закрытие −
+ * k·ATR» (шорт зеркально) и действует со СЛЕДУЮЩЕГО бара — проверка стопа
+ * выше уже прошла по старому уровню. Только в сторону сделки; нет ATR на
+ * баре — стоп не трогаем.
+ */
+function advanceTrailingStop(
+  config: StrategyConfig,
+  open: OpenPosition,
+  bar: Candle,
+  atrValue: number | null,
+): void {
+  const trail = config.exit.trailingStop;
+  if (!trail) return;
+  const long = open.direction === "long";
+  open.bestClose =
+    open.bestClose === null ? bar.close : long ? Math.max(open.bestClose, bar.close) : Math.min(open.bestClose, bar.close);
+  if (atrValue === null || !(atrValue > 0)) return;
+  const candidate = long ? open.bestClose - trail.atr * atrValue : open.bestClose + trail.atr * atrValue;
+  open.stopPrice = long ? Math.max(open.stopPrice, candidate) : Math.min(open.stopPrice, candidate);
 }
 
 function computeRisk(config: StrategyConfig, entryPrice: number, atrValue: number | null): number | null {
@@ -431,7 +498,13 @@ function computeRisk(config: StrategyConfig, entryPrice: number, atrValue: numbe
   return stopLoss.value; // fixed absolute price distance
 }
 
-function closeTrade(symbol: string, open: OpenPosition, exitTime: number, exitPrice: number): TradeResult {
+function closeTrade(
+  symbol: string,
+  open: OpenPosition,
+  exitTime: number,
+  exitPrice: number,
+  exitReason: NonNullable<TradeResult["exitReason"]>,
+): TradeResult {
   // Средняя цена позиции; без доборов units = 1 и это ровно цена входа.
   const avgEntry = open.units > 0 ? open.costBasis / open.units : open.entryPrice;
   // P&L взвешен по объёму, а знаменатель R — ширина стопа от ПЕРВОГО входа на
@@ -444,6 +517,17 @@ function closeTrade(symbol: string, open: OpenPosition, exitTime: number, exitPr
       ? open.units * exitPrice - open.costBasis
       : open.costBasis - open.units * exitPrice);
   const rMultiple = open.riskBudget === 0 ? 0 : pnl / open.riskBudget;
+  // Тейк — лимитка (мейкер); стоп, трейлинг и время — рынок (тейкер).
+  const fills: TradeFill[] = [
+    ...open.fills,
+    {
+      side: "exit",
+      price: exitPrice,
+      qty: open.units,
+      liquidity: exitReason === "target" ? "maker" : "taker",
+      time: exitTime,
+    },
+  ];
 
   return {
     symbol,
@@ -458,6 +542,8 @@ function closeTrade(symbol: string, open: OpenPosition, exitTime: number, exitPr
     riskBudget: open.riskBudget,
     won: rMultiple > 0,
     barsHeld: open.barsHeld,
+    exitReason,
+    fills,
   };
 }
 
