@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-11-08T09:43:04.580Z",
+  "generatedAt": "2026-11-08T10:36:14.604Z",
   "run": {
     "durationMin": 1,
     "nextNightUtc": "2026-11-08T21:37:00.000Z",
-    "lastTickUtc": "2026-11-08T09:43:04.580Z"
+    "lastTickUtc": "2026-11-08T10:36:14.604Z"
   },
   "ledger": {
     "trials": 56914,
@@ -35,19 +35,14 @@
       }
     ],
     "corpus": {
-      "newestBar": "2026-11-03T23:00:00.000Z",
-      "ageDays": 4.45,
+      "newestBar": "2026-11-07T23:00:00.000Z",
+      "ageDays": 0.48,
       "laggingSymbols": 202,
-      "level": "warn"
+      "level": "ok"
     }
   },
-  "failure": "запрещённый переход REJECTED → REJECTED для fundpress_w30_p95|short|1h|none|s2t1b40",
-  "silence": {
-    "level": "fail",
-    "hoursSince": 1932.5439080555554,
-    "lastNightIso": "2026-08-19T21:10:26.496Z",
-    "message": "🚨 НОЧЬ НЕ ЗАПУСКАЛАСЬ: 1932.5 ч с последнего полного прогона (пропущено ночей: 80, последняя 2026-08-19T21:10:26.496Z).\nНочь началась (2026-11-07T16:03:02Z) и оборвалась, не дойдя до конца — сон, выключение или убитый процесс. Смотреть ~/.chartlab/logs/nightly.log."
-  },
+  "failure": "⚠️ ПРОСТРАНСТВО ИСЧЕРПАНО: новых кандидатов нет (1h+4h). Инкубатор и надзор отработали.",
+  "silence": null,
   "universes": [
     {
       "tf": "1h",
