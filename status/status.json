@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-11-09T08:08:20.730Z",
+  "generatedAt": "2026-11-09T09:09:37.377Z",
   "run": {
     "durationMin": 1,
     "nextNightUtc": "2026-11-09T21:37:00.000Z",
-    "lastTickUtc": "2026-11-09T08:08:20.730Z"
+    "lastTickUtc": "2026-11-09T09:09:37.377Z"
   },
   "ledger": {
     "trials": 56914,
@@ -36,7 +36,7 @@
     ],
     "corpus": {
       "newestBar": "2026-11-07T23:00:00.000Z",
-      "ageDays": 1.38,
+      "ageDays": 1.42,
       "laggingSymbols": 202,
       "level": "ok"
     }
@@ -44,9 +44,9 @@
   "failure": "⚠️ ПРОСТРАНСТВО ИСЧЕРПАНО: новых кандидатов нет (1h+4h). Инкубатор и надзор отработали.",
   "silence": {
     "level": "ok",
-    "hoursSince": 21.53449,
+    "hoursSince": 22.555781666666668,
     "lastNightIso": "2026-11-08T10:36:16.542Z",
-    "message": "Последняя ночь 21.5 ч назад — расписание живо."
+    "message": "Последняя ночь 22.6 ч назад — расписание живо."
   },
   "universes": [
     {
